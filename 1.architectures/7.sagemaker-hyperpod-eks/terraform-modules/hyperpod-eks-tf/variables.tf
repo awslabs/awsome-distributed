@@ -684,6 +684,97 @@ variable "create_task_governance_module" {
   default     = false
 }
 
+variable "task_governance_compute_quotas" {
+  description = "SageMaker HyperPod task governance compute allocations to create or update. Only used when create_task_governance_module is true."
+  type = list(object({
+    name             = string
+    description      = optional(string, "")
+    activation_state = optional(string, "Enabled")
+    compute_quota_resources = list(object({
+      instance_type = string
+      count         = optional(number)
+      accelerators  = optional(number)
+      vcpu          = optional(number)
+      memory_in_gib = optional(number)
+      accelerator_partition = optional(object({
+        type  = string
+        count = number
+      }))
+    }))
+    resource_sharing_config = optional(object({
+      strategy     = optional(string, "LendAndBorrow")
+      borrow_limit = optional(number)
+      absolute_borrow_limits = optional(list(object({
+        instance_type = string
+        count         = optional(number)
+        accelerators  = optional(number)
+        vcpu          = optional(number)
+        memory_in_gib = optional(number)
+        accelerator_partition = optional(object({
+          type  = string
+          count = number
+        }))
+      })), [])
+    }), {})
+    preempt_team_tasks = optional(string, "LowerPriority")
+    target = object({
+      team_name         = string
+      fair_share_weight = optional(number, 0)
+    })
+  }))
+  default = []
+
+  validation {
+    condition = alltrue([
+      for quota in var.task_governance_compute_quotas :
+      contains(["Enabled", "Disabled"], quota.activation_state)
+    ])
+    error_message = "Task governance compute quota activation_state must be Enabled or Disabled."
+  }
+
+  validation {
+    condition = alltrue([
+      for quota in var.task_governance_compute_quotas :
+      contains(["Lend", "DontLend", "LendAndBorrow"], quota.resource_sharing_config.strategy)
+    ])
+    error_message = "Task governance compute quota resource_sharing_config.strategy must be Lend, DontLend, or LendAndBorrow."
+  }
+
+  validation {
+    condition = alltrue([
+      for quota in var.task_governance_compute_quotas :
+      quota.resource_sharing_config.borrow_limit == null || (quota.resource_sharing_config.borrow_limit >= 1 && quota.resource_sharing_config.borrow_limit <= 500)
+    ])
+    error_message = "Task governance compute quota resource_sharing_config.borrow_limit must be between 1 and 500 when set."
+  }
+
+  validation {
+    condition = alltrue([
+      for quota in var.task_governance_compute_quotas :
+      contains(["Never", "LowerPriority"], quota.preempt_team_tasks)
+    ])
+    error_message = "Task governance compute quota preempt_team_tasks must be Never or LowerPriority."
+  }
+
+  validation {
+    condition = alltrue([
+      for quota in var.task_governance_compute_quotas :
+      quota.target.fair_share_weight >= 0 && quota.target.fair_share_weight <= 100
+    ])
+    error_message = "Task governance compute quota target.fair_share_weight must be between 0 and 100."
+  }
+
+  validation {
+    condition = alltrue(flatten([
+      for quota in var.task_governance_compute_quotas : [
+        for resource in quota.compute_quota_resources :
+        resource.count != null || resource.accelerators != null || resource.vcpu != null || resource.memory_in_gib != null || resource.accelerator_partition != null
+      ]
+    ]))
+    error_message = "Each task governance compute quota resource must set at least one of count, accelerators, vcpu, memory_in_gib, or accelerator_partition."
+  }
+}
+
 # HyperPod Training Operator
 variable "create_hyperpod_training_operator_module" {
   description = "Whether to enable HyperPod Training Operator"

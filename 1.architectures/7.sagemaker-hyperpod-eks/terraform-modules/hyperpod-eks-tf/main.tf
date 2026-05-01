@@ -249,7 +249,10 @@ module "task_governance" {
   count  = local.create_task_governance_module ? 1 : 0
   source = "./modules/task_governance"
   
+  aws_region           = var.aws_region
+  compute_quotas       = var.task_governance_compute_quotas
   eks_cluster_name     = var.eks_cluster_name
+  hyperpod_cluster_arn = length(module.hyperpod_cluster) > 0 ? module.hyperpod_cluster[0].hyperpod_cluster_arn : ""
 
   depends_on = [module.hyperpod_cluster]
 }

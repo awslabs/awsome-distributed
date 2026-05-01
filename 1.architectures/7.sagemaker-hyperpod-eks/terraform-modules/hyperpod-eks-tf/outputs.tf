@@ -130,6 +130,11 @@ output "hyperpod_cluster_status" {
   value       = var.create_hyperpod_module ? module.hyperpod_cluster[0].hyperpod_cluster_status : null
 }
 
+output "task_governance_compute_quota_names" {
+  description = "Names of task governance compute allocations managed by this module"
+  value       = local.create_task_governance_module ? module.task_governance[0].compute_quota_names : []
+}
+
 # Region Output
 output "aws_region" {
   description = "AWS region"

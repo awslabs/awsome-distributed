@@ -61,6 +61,8 @@ aws sagemaker \
 
 Each team requires a Compute Allocation to manage their compute capacity. Both teams will have 2 instances allocated, 100 fair-share weight, and 50% borrowing capability.
 
+If you are deploying the HyperPod EKS Terraform module, you can configure compute allocations with the `task_governance_compute_quotas` variable instead of running the following AWS CLI commands manually. See the [Terraform module README](../terraform-modules/README.md#task-governance-compute-allocations) for an example.
+
 ```
 aws sagemaker \
     --region $REGION \

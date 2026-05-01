@@ -6,6 +6,7 @@ The diagram below depicts the Terraform modules that have been bundled into a si
 
 ---
 
+
 ## Get the Modules
 Clone the AWSome Distributed Training repository and navigate to the terraform-modules directory:
 ```bash
@@ -500,6 +501,41 @@ Set the following parameters to `true` in your `custom.tfvars` file to enable op
 | `create_hyperpod_inference_operator_module`  | Installs the [HyperPod inference operator addon](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-model-deployment-setup.html) for deployment and management of machine learning inference endpoints |
 | `create_observability_module` | Installs the [HyperPod Observability addon](https://docs.aws.amazon.com/sagemaker/latest/dg/hyperpod-observability-addon-setup.html) to publish key metrics to Amazon Managed Service for Prometheus and displays them in Amazon Managed Grafana dashboards | 
 
+#### Task governance compute allocations
+
+When `create_task_governance_module = true`, you can also manage SageMaker HyperPod task governance compute allocations with Terraform by setting `task_governance_compute_quotas`. The Terraform providers do not currently expose a first-class SageMaker compute quota resource, so this module uses the AWS CLI from a Terraform `local-exec` provisioner to call the SageMaker `create-compute-quota`, `update-compute-quota`, and `delete-compute-quota` APIs. The machine running Terraform must have the AWS CLI and `python3` installed and authenticated for the target account.
+
+```hcl
+create_task_governance_module = true
+
+task_governance_compute_quotas = [
+  {
+    name        = "team-a-quota"
+    description = "Team A compute allocation"
+
+    compute_quota_resources = [
+      {
+        instance_type = "ml.g5.8xlarge"
+        count         = 2
+      }
+    ]
+
+    resource_sharing_config = {
+      strategy = "DontLend"
+    }
+
+    preempt_team_tasks = "LowerPriority"
+
+    target = {
+      team_name         = "team-a"
+      fair_share_weight = 0
+    }
+  }
+]
+```
+
+For teams that lend and borrow idle capacity, use `strategy = "LendAndBorrow"` and optionally set `borrow_limit` or `absolute_borrow_limits`.
+
 The HyperPod training and inference operators both require the [cert-manager](https://cert-manager.io/) EKS addon to be installed as a prerequisite. The variable `enable_cert_manager` is set to `true` by default, so that when `create_hyperpod_training_operator_module` or `create_hyperpod_inference_operator_module` are also set to `true`, cert-manager will be installed as a dependency of the operators. In other words, this stack will not install cert-manager as a standalone component, but it can be disabled if you already have it installed on an existing EKS cluster and wish to use one of the HyperPod operators. 
 
 The HyperPod inference operator also has the following additional dependencies: 
@@ -598,5 +634,3 @@ Do not attempt to install these addons later using the console.
 Once you have your `rig_custom.tfvars` file is created, you can proceed to deployment. 
 
 ---
-
-
