@@ -122,11 +122,7 @@ RUN mv $OPEN_MPI_PATH/bin/mpirun $OPEN_MPI_PATH/bin/mpirun.real \
 ######################
 RUN pip install transformers==${TRANSFORMERS_VERSION} sentencepiece python-etcd
 
-## Set Open MPI variables to exclude network interface and conduit.
-ENV OMPI_MCA_pml=^cm,ucx            \
-    OMPI_MCA_btl=tcp,self           \
-    OMPI_MCA_btl_tcp_if_exclude=lo,docker0,veth_def_agent\
-    OPAL_PREFIX=/opt/amazon/openmpi \
+ENV OPAL_PREFIX=/opt/amazon/openmpi \
     NCCL_SOCKET_IFNAME=^docker,lo,veth
 
 ## Turn off PMIx Error https://github.com/open-mpi/ompi/issues/7516
