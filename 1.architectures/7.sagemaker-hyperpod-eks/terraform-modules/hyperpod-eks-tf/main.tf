@@ -39,6 +39,7 @@ locals {
   karpenter_role_arn       = var.create_sagemaker_iam_role_module && length(module.sagemaker_iam_role[0].karpenter_role_arn) > 0 ? module.sagemaker_iam_role[0].karpenter_role_arn[0] : null
   nat_gateway_id           = var.create_vpc_module ? module.vpc[0].nat_gateway_1_id : var.existing_nat_gateway_id
   private_route_table_ids  = var.create_private_subnet_module ? module.private_subnet[0].private_route_table_ids : var.existing_private_route_table_ids
+  hyperpod_cluster_arn     = local.create_hyperpod_module ? module.hyperpod_cluster[0].hyperpod_cluster_arn : var.existing_hyperpod_cluster_arn
   eks_private_subnet_cidrs = [var.eks_private_subnet_1_cidr, var.eks_private_subnet_2_cidr]
   enable_guardduty_cleanup = var.enable_guardduty_cleanup && (var.create_vpc_module || var.create_private_subnet_module || var.create_eks_module)
 
@@ -251,8 +252,8 @@ module "task_governance" {
   
   aws_region           = var.aws_region
   compute_quotas       = var.task_governance_compute_quotas
-  eks_cluster_name     = var.eks_cluster_name
-  hyperpod_cluster_arn = length(module.hyperpod_cluster) > 0 ? module.hyperpod_cluster[0].hyperpod_cluster_arn : ""
+  eks_cluster_name     = local.eks_cluster_name
+  hyperpod_cluster_arn = local.hyperpod_cluster_arn
 
   depends_on = [module.hyperpod_cluster]
 }
@@ -366,5 +367,3 @@ resource "null_resource" "guardduty_cleanup" {
     module.eks_cluster
   ]
 }
-
-

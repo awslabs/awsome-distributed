@@ -438,6 +438,12 @@ variable "hyperpod_cluster_name" {
   default     = "ml-cluster"
 }
 
+variable "existing_hyperpod_cluster_arn" {
+  description = "ARN of an existing HyperPod cluster. Required for task governance compute quotas when create_hyperpod_module is false."
+  type        = string
+  default     = ""
+}
+
 variable "auto_node_recovery" {
   description = "Whether to enable or disable the automatic node recovery feature"
   type        = bool
@@ -762,6 +768,40 @@ variable "task_governance_compute_quotas" {
       quota.target.fair_share_weight >= 0 && quota.target.fair_share_weight <= 100
     ])
     error_message = "Task governance compute quota target.fair_share_weight must be between 0 and 100."
+  }
+
+  validation {
+    condition     = length(var.task_governance_compute_quotas) == 0 || var.create_hyperpod_module || var.existing_hyperpod_cluster_arn != ""
+    error_message = "existing_hyperpod_cluster_arn is required when task_governance_compute_quotas are configured and create_hyperpod_module is false."
+  }
+
+  validation {
+    condition = alltrue([
+      for quota in var.task_governance_compute_quotas :
+      trimspace(quota.name) != "" && trimspace(quota.target.team_name) != ""
+    ])
+    error_message = "Task governance compute quota name and target.team_name cannot be empty."
+  }
+
+  validation {
+    condition = alltrue(flatten([
+      for quota in var.task_governance_compute_quotas : [
+        for resource in concat(quota.compute_quota_resources, quota.resource_sharing_config.absolute_borrow_limits) :
+        trimspace(resource.instance_type) != "" &&
+        (resource.count == null || resource.count > 0) &&
+        (resource.accelerators == null || resource.accelerators > 0) &&
+        (resource.vcpu == null || resource.vcpu > 0) &&
+        (resource.memory_in_gib == null || resource.memory_in_gib > 0) &&
+        (
+          resource.accelerator_partition == null ||
+          (
+            trimspace(resource.accelerator_partition.type) != "" &&
+            resource.accelerator_partition.count > 0
+          )
+        )
+      ]
+    ]))
+    error_message = "Task governance compute quota resource values must be non-empty and positive when set."
   }
 
   validation {

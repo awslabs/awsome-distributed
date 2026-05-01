@@ -122,7 +122,7 @@ output "hyperpod_cluster_name" {
 
 output "hyperpod_cluster_arn" {
   description = "ARN of the HyperPod cluster"
-  value       = var.create_hyperpod_module ? module.hyperpod_cluster[0].hyperpod_cluster_arn : null
+  value       = local.hyperpod_cluster_arn != "" ? local.hyperpod_cluster_arn : null
 }
 
 output "hyperpod_cluster_status" {

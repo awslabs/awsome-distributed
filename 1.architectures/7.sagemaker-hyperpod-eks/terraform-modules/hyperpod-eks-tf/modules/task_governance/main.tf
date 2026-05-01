@@ -93,6 +93,7 @@ resource "null_resource" "wait_for_kueue_webhook" {
   provisioner "local-exec" {
     command = <<-EOT
       echo "Waiting for kueue-controller-manager deployment to be ready..."
+      aws eks update-kubeconfig --region ${var.aws_region} --name ${var.eks_cluster_name}
       kubectl wait --for=condition=available deployment/kueue-controller-manager \
         -n kueue-system \
         --timeout=300s
@@ -111,7 +112,7 @@ resource "null_resource" "compute_quota" {
     cluster_arn          = var.hyperpod_cluster_arn
     compute_quota_config = jsonencode(local.compute_quota_configs[each.key])
     compute_quota_target = jsonencode(local.compute_quota_targets[each.key])
-    description          = each.value.description
+    description          = each.value.description != null ? each.value.description : ""
     name                 = each.value.name
     region               = var.aws_region
   }

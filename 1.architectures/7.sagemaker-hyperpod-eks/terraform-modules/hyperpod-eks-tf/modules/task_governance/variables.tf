@@ -100,6 +100,35 @@ variable "compute_quotas" {
   }
 
   validation {
+    condition = alltrue([
+      for quota in var.compute_quotas :
+      trimspace(quota.name) != "" && trimspace(quota.target.team_name) != ""
+    ])
+    error_message = "Compute quota name and target.team_name cannot be empty."
+  }
+
+  validation {
+    condition = alltrue(flatten([
+      for quota in var.compute_quotas : [
+        for resource in concat(quota.compute_quota_resources, quota.resource_sharing_config.absolute_borrow_limits) :
+        trimspace(resource.instance_type) != "" &&
+        (resource.count == null || resource.count > 0) &&
+        (resource.accelerators == null || resource.accelerators > 0) &&
+        (resource.vcpu == null || resource.vcpu > 0) &&
+        (resource.memory_in_gib == null || resource.memory_in_gib > 0) &&
+        (
+          resource.accelerator_partition == null ||
+          (
+            trimspace(resource.accelerator_partition.type) != "" &&
+            resource.accelerator_partition.count > 0
+          )
+        )
+      ]
+    ]))
+    error_message = "Compute quota resource values must be non-empty and positive when set."
+  }
+
+  validation {
     condition = alltrue(flatten([
       for quota in var.compute_quotas : [
         for resource in quota.compute_quota_resources :

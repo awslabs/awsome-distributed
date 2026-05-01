@@ -503,10 +503,15 @@ Set the following parameters to `true` in your `custom.tfvars` file to enable op
 
 #### Task governance compute allocations
 
-When `create_task_governance_module = true`, you can also manage SageMaker HyperPod task governance compute allocations with Terraform by setting `task_governance_compute_quotas`. The Terraform providers do not currently expose a first-class SageMaker compute quota resource, so this module uses the AWS CLI from a Terraform `local-exec` provisioner to call the SageMaker `create-compute-quota`, `update-compute-quota`, and `delete-compute-quota` APIs. The machine running Terraform must have the AWS CLI and `python3` installed and authenticated for the target account.
+When `create_task_governance_module = true`, you can also manage SageMaker HyperPod task governance compute allocations with Terraform by setting `task_governance_compute_quotas`. The Terraform providers do not currently expose a first-class SageMaker compute quota resource, so this module uses the AWS CLI from a Terraform `local-exec` provisioner to call the SageMaker `create-compute-quota`, `update-compute-quota`, and `delete-compute-quota` APIs. The machine running Terraform must have the AWS CLI, `kubectl`, and `python3` installed and authenticated for the target account.
+
+If you are using an existing HyperPod cluster by setting `create_hyperpod_module = false`, also set `existing_hyperpod_cluster_arn` so the module can attach compute allocations to that cluster.
 
 ```hcl
 create_task_governance_module = true
+
+# Required only when create_hyperpod_module = false.
+# existing_hyperpod_cluster_arn = "arn:aws:sagemaker:us-west-2:123456789012:cluster/abc123example"
 
 task_governance_compute_quotas = [
   {

@@ -77,6 +77,32 @@ describe_quota() {
     --output json
 }
 
+is_failure_status() {
+  local status="$1"
+
+  case "${status}" in
+    CreateFailed | CreateRollbackFailed | UpdateFailed | UpdateRollbackFailed | DeleteFailed | DeleteRollbackFailed)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+is_create_failure_status() {
+  local status="$1"
+
+  case "${status}" in
+    CreateFailed | CreateRollbackFailed)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 quota_matches_desired() {
   local current_json="$1"
 
@@ -169,38 +195,58 @@ wait_for_stable_quota() {
   exit 1
 }
 
+create_quota() {
+  local result_json
+  local quota_id
+  local -a create_args
+
+  log "Creating SageMaker compute quota ${QUOTA_NAME}"
+  create_args=(
+    create-compute-quota
+    --name "${QUOTA_NAME}"
+    --cluster-arn "${CLUSTER_ARN}"
+    --compute-quota-config "${COMPUTE_QUOTA_CONFIG}"
+    --compute-quota-target "${COMPUTE_QUOTA_TARGET}"
+    --activation-state "${ACTIVATION_STATE}"
+    --output json
+  )
+  if [[ -n "${DESCRIPTION}" ]]; then
+    create_args+=(--description "${DESCRIPTION}")
+  fi
+
+  result_json="$(aws_sm "${create_args[@]}")"
+  quota_id="$(json_field ComputeQuotaId "${result_json}")"
+  wait_for_stable_quota "${quota_id}" ready
+}
+
 apply_quota() {
   local quota_json
   local quota_id
   local current_json
-  local result_json
+  local status
   local target_version
 
   quota_json="$(find_quota)"
 
   if [[ -z "${quota_json}" ]]; then
-    log "Creating SageMaker compute quota ${QUOTA_NAME}"
-    local -a create_args
-    create_args=(
-      create-compute-quota
-      --name "${QUOTA_NAME}"
-      --cluster-arn "${CLUSTER_ARN}"
-      --compute-quota-config "${COMPUTE_QUOTA_CONFIG}"
-      --compute-quota-target "${COMPUTE_QUOTA_TARGET}"
-      --activation-state "${ACTIVATION_STATE}"
-      --output json
-    )
-    if [[ -n "${DESCRIPTION}" ]]; then
-      create_args+=(--description "${DESCRIPTION}")
-    fi
-
-    result_json="$(aws_sm "${create_args[@]}")"
-    quota_id="$(json_field ComputeQuotaId "${result_json}")"
-    wait_for_stable_quota "${quota_id}" ready
+    create_quota
     return
   fi
 
   quota_id="$(json_field ComputeQuotaId "${quota_json}")"
+  current_json="$(describe_quota "${quota_id}")"
+  status="$(json_field Status "${current_json}")"
+
+  if is_create_failure_status "${status}"; then
+    log "Deleting failed SageMaker compute quota ${QUOTA_NAME} before recreating it"
+    aws_sm delete-compute-quota \
+      --compute-quota-id "${quota_id}" \
+      --output json >/dev/null
+    wait_for_stable_quota "${quota_id}" delete
+    create_quota
+    return
+  fi
+
   wait_for_stable_quota "${quota_id}" ready
   current_json="$(describe_quota "${quota_id}")"
 
@@ -228,6 +274,7 @@ delete_quota() {
   local quota_json
   local quota_id
   local current_json
+  local status
 
   quota_json="$(find_quota)"
 
@@ -237,8 +284,21 @@ delete_quota() {
   fi
 
   quota_id="$(json_field ComputeQuotaId "${quota_json}")"
-  wait_for_stable_quota "${quota_id}" ready
-  current_json="$(describe_quota "${quota_id}")"
+  if ! current_json="$(describe_quota "${quota_id}" 2>/dev/null)"; then
+    log "SageMaker compute quota ${QUOTA_NAME} is already absent"
+    return
+  fi
+
+  status="$(json_field Status "${current_json}")"
+  if [[ "${status}" == "Deleted" ]]; then
+    log "SageMaker compute quota ${QUOTA_NAME} is already deleted"
+    return
+  fi
+
+  if ! is_failure_status "${status}"; then
+    wait_for_stable_quota "${quota_id}" ready
+    current_json="$(describe_quota "${quota_id}")"
+  fi
 
   if ! quota_matches_desired "${current_json}"; then
     log "Skipping delete for ${QUOTA_NAME}; the live quota no longer matches this Terraform instance"
