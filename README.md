@@ -1,6 +1,7 @@
-# ADT Blog source
+# Awsome-Distributed Deep Dives — source
 
-This branch holds the Hugo source for the ADT blog, published at
+This branch holds the Hugo source for *Awsome-Distributed Deep Dives by
+the AWS Frameworks Team*, published at
 <https://awslabs.github.io/awsome-distributed/>.
 
 This branch is editorially curated by AWS authors. External PRs targeting

@@ -1,6 +1,6 @@
 baseURL = "https://awslabs.github.io/awsome-distributed/"
 languageCode = "en-us"
-title = "ADT Blog"
+title = "Awsome-Distributed Deep Dives by the AWS Frameworks Team"
 theme = "PaperMod"
 
 [params]
