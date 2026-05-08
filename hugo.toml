@@ -9,5 +9,25 @@ theme = "PaperMod"
   ShowShareButtons = false
   ShowPostNavLinks = true
 
+[params.homeInfoParams]
+  Title = "Distributed ML on AWS"
+  Content = """
+Posts on distributed training and inference — infrastructure, frameworks, and observability — from the AWS Frameworks Team.
+
+Companion to [`awslabs/awsome-distributed`](https://github.com/awslabs/awsome-distributed).
+"""
+
+[[menu.main]]
+  identifier = "posts"
+  name = "Posts"
+  url = "/posts/"
+  weight = 10
+
+[[menu.main]]
+  identifier = "tags"
+  name = "Tags"
+  url = "/tags/"
+  weight = 20
+
 [markup.goldmark.renderer]
   unsafe = true
