@@ -16,7 +16,12 @@ else
   PYTHON_VERSION=$(python3 --version | awk '{print $2}' | awk -F'.' '{print $1"."$2}')
 fi
 
-sudo apt install -y python$PYTHON_VERSION-venv
+# Install venv package if sudo is available, otherwise assume pre-installed
+if command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
+    sudo apt install -y python${PYTHON_VERSION}-venv
+else
+    echo "No sudo access — assuming python${PYTHON_VERSION}-venv is pre-installed"
+fi
 
 # Create and actiate Python virtual environment
 $PYTHON_V -m venv env

@@ -32,7 +32,7 @@ export FSX_MOUNT=$(pwd):$DATA_PATH
 ## Plenty of EFA level variables
 ## For G4dn and other G5, comment out all
 #export FI_LOG_LEVEL=warn
-export NCCL_DEBUG=INFO
+export NCCL_DEBUG=WARN
 export FI_PROVIDER=efa
 export FI_EFA_USE_HUGE_PAGE=0    # Set to 0 when you see os.fork() causes OSError: Cannot allocate memory.  Disabling huge page causes minor performance hit.
 ## Switching SYNC_MEMOPS to zero can boost throughput with FSDP
@@ -40,14 +40,19 @@ export FI_EFA_USE_HUGE_PAGE=0    # Set to 0 when you see os.fork() causes OSErro
 ## Reduces memory synchronizations
 ## https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__UNIFIED.html
 export FI_EFA_SET_CUDA_SYNC_MEMOPS=0
-# LD_PRELOAD is required for PyTorch to find the NCCL library
-# This path assumes you are using the Deep Learning AMI
-# If you are not using the DLAMI, you may need to update this path
-export LD_PRELOAD=/usr/local/cuda-12.8/lib/libnccl.so
+# LD_PRELOAD is required for PyTorch to find the system NCCL library
+# which is built with EFA/OFI support. Without this, PyTorch may use
+# its bundled NCCL which lacks EFA support.
+export LD_PRELOAD=/lib/x86_64-linux-gnu/libnccl.so
 export NCCL_SOCKET_IFNAME=^docker,lo,veth,eth
 
 ## Set HuggingFace metadata timeout (in seconds) for large clusters
 export HF_HUB_ETAG_TIMEOUT=60
+## Use a shared cache on FSx so dataset metadata and tokenizer downloads
+## are reused across runs and nodes, avoiding HuggingFace API rate limits.
+export HF_HOME=/fsx/.cache/huggingface
+export HF_DATASETS_CACHE=/fsx/.cache/huggingface/datasets
+export HF_HUB_OFFLINE=1
 
 
 ########################

@@ -3,6 +3,7 @@
 
 import os
 import math
+import json
 import functools
 import numpy as np
 import torch
@@ -22,6 +23,7 @@ from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
 g_gigabyte = 1024**3
 
+
 def setup():
     # initialize the process group
     dist.init_process_group("nccl")
@@ -29,6 +31,7 @@ def setup():
 
 def cleanup():
     dist.destroy_process_group()
+
 
 def get_date_of_run():
     """create date and time for file save uniqueness
@@ -39,21 +42,21 @@ def get_date_of_run():
     return date_of_run
 
 
-
 def format_metrics_to_gb(item):
     """quick function to format numbers to gigabyte and round to 4 digit precision"""
     metric_num = item / g_gigabyte
     metric_num = round(metric_num, ndigits=4)
     return metric_num
 
+
 def train(args, model, rank, world_size, train_loader, optimizer, epoch, sampler=None):
     model.train()
-    local_rank = int(os.environ['LOCAL_RANK'])
+    local_rank = int(os.environ["LOCAL_RANK"])
     fsdp_loss = torch.zeros(2).to(local_rank)
-  
+
     if sampler:
         sampler.set_epoch(epoch)
-    if rank==0:
+    if rank == 0:
         inner_pbar = tqdm.tqdm(
             range(len(train_loader)), colour="blue", desc="r0 Training Epoch"
         )
@@ -61,31 +64,32 @@ def train(args, model, rank, world_size, train_loader, optimizer, epoch, sampler
         for key in batch.keys():
             batch[key] = batch[key].to(local_rank)
         optimizer.zero_grad()
-        output = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"] )
+        output = model(
+            input_ids=batch["source_ids"],
+            attention_mask=batch["source_mask"],
+            labels=batch["target_ids"],
+        )
         loss = output["loss"]
         loss.backward()
         optimizer.step()
         fsdp_loss[0] += loss.item()
         fsdp_loss[1] += len(batch)
-        if rank==0:
+        if rank == 0:
             inner_pbar.update(1)
 
     dist.all_reduce(fsdp_loss, op=dist.ReduceOp.SUM)
     train_accuracy = fsdp_loss[0] / fsdp_loss[1]
 
-
     if rank == 0:
         inner_pbar.close()
-        print(
-                f"Train Epoch: \t{epoch}, Loss: \t{train_accuracy:.4f}"
-            )
+        print(f"Train Epoch: \t{epoch}, Loss: \t{train_accuracy:.4f}")
     return train_accuracy
 
 
 def validation(model, rank, world_size, val_loader):
     model.eval()
     correct = 0
-    local_rank = int(os.environ['LOCAL_RANK'])
+    local_rank = int(os.environ["LOCAL_RANK"])
     fsdp_loss = torch.zeros(2).to(local_rank)
     if rank == 0:
         inner_pbar = tqdm.tqdm(
@@ -95,11 +99,15 @@ def validation(model, rank, world_size, val_loader):
         for batch in val_loader:
             for key in batch.keys():
                 batch[key] = batch[key].to(local_rank)
-            output = model(input_ids=batch["source_ids"],attention_mask=batch["source_mask"],labels=batch["target_ids"])
+            output = model(
+                input_ids=batch["source_ids"],
+                attention_mask=batch["source_mask"],
+                labels=batch["target_ids"],
+            )
             fsdp_loss[0] += output["loss"].item()  # sum up batch loss
             fsdp_loss[1] += len(batch)
 
-            if rank==0:
+            if rank == 0:
                 inner_pbar.update(1)
 
     dist.all_reduce(fsdp_loss, op=dist.ReduceOp.SUM)
@@ -108,6 +116,7 @@ def validation(model, rank, world_size, val_loader):
         inner_pbar.close()
         print(f"Validation Loss: {val_loss:.4f}")
     return val_loss
+
 
 def get_model_config(args):
     if "gpt_neox" in args.model_type:
@@ -149,7 +158,7 @@ def get_model_config(args):
         )
     elif "llama_v3" in args.model_type:
         from transformers import LlamaConfig
-        
+
         model_config = LlamaConfig(
             vocab_size=args.vocab_size,
             hidden_size=args.hidden_width,
@@ -164,12 +173,12 @@ def get_model_config(args):
             use_cache=False,
             pretraining_tp=1,
             tie_word_embeddings=False,
-            rope_scaling= {"type": "dynamic", "factor": 2.0},
+            rope_scaling={"type": "dynamic", "factor": 2.0},
         )
-        
-        
+
     elif "mixtral" in args.model_type:
         from transformers import MixtralConfig
+
         model_config = MixtralConfig(
             vocab_size=args.vocab_size,
             hidden_size=args.hidden_width,
@@ -188,23 +197,25 @@ def get_model_config(args):
         )
     elif "mistral" in args.model_type:
         from transformers import MistralConfig
+
         model_config = MistralConfig(
-                vocab_size=args.vocab_size,
-                hidden_size=args.hidden_width,
-                intermediate_size=args.intermediate_size,
-                num_hidden_layers=args.num_layers,
-                num_attention_heads=args.num_heads,
-                num_key_value_heads=args.num_key_value_heads,
-                hidden_act="silu",
-                max_position_embeddings=args.max_context_width,
-                initializer_range=args.initializer_range,
-                rms_norm_eps=1e-5,
-                use_cache=False,
-                tie_word_embeddings=False
+            vocab_size=args.vocab_size,
+            hidden_size=args.hidden_width,
+            intermediate_size=args.intermediate_size,
+            num_hidden_layers=args.num_layers,
+            num_attention_heads=args.num_heads,
+            num_key_value_heads=args.num_key_value_heads,
+            hidden_act="silu",
+            max_position_embeddings=args.max_context_width,
+            initializer_range=args.initializer_range,
+            rms_norm_eps=1e-5,
+            use_cache=False,
+            tie_word_embeddings=False,
         )
     else:
         raise NotImplementedError(f"Model {args.model_type} not implemented")
     return model_config
+
 
 def compute_num_params(model):
     """Get num params."""
@@ -220,24 +231,30 @@ def compute_num_params(model):
 
     return num_params
 
+
 _logger = None
+
+
 def get_logger():
     global _logger
     if _logger is None:
-        logging.getLogger("torch.distributed.checkpoint._dedup_tensors").setLevel(logging.ERROR)
+        logging.getLogger("torch.distributed.checkpoint._dedup_tensors").setLevel(
+            logging.ERROR
+        )
         logging.getLogger("torch.distributed.distributed_c10d").setLevel(logging.ERROR)
         _logger = logging.getLogger(__name__)
         _logger.setLevel(logging.INFO)
         _logger.handlers = []
         ch = logging.StreamHandler()
         formatter = logging.Formatter(
-            "%(asctime)s %(levelname).1s " "[%(filename)s:%(lineno)d] %(message)s",
+            "%(asctime)s %(levelname).1s [%(filename)s:%(lineno)d] %(message)s",
             "%Y-%m-%d %H:%M:%S",
         )
         ch.setFormatter(formatter)
         _logger.addHandler(ch)
         _logger.propagate = False
     return _logger
+
 
 def get_transformer_layer(model_type="gpt2"):
     """Get transformer layer."""
@@ -265,7 +282,7 @@ def get_transformer_layer(model_type="gpt2"):
         from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
         transformer_layer = LlamaDecoderLayer
-        
+
     elif model_type == "llama_v3":
         from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
@@ -286,6 +303,7 @@ def get_transformer_layer(model_type="gpt2"):
 
     return transformer_layer
 
+
 def get_sharding_strategy(strategy: str):
     """Get sharding strategy."""
     sharding_strategy = getattr(ShardingStrategy, strategy.upper())
@@ -299,6 +317,7 @@ def get_backward_fetch_policy(policy: str):
     _logger.debug("Translating %s to %s.", policy, backward_fetch_policy)
     return backward_fetch_policy
 
+
 def apply_activation_checkpoint(args, model=None):
     from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
         CheckpointImpl,
@@ -307,15 +326,14 @@ def apply_activation_checkpoint(args, model=None):
     )
 
     transformer_layer = get_transformer_layer(args.model_type)
-    check_fn_gpt = lambda submodule: isinstance(
-        submodule, transformer_layer
-    )
+    check_fn_gpt = lambda submodule: isinstance(submodule, transformer_layer)
     entrant_wrapper = functools.partial(
         checkpoint_wrapper, checkpoint_impl=CheckpointImpl.NO_REENTRANT
     )
     apply_activation_checkpointing(
         model, checkpoint_wrapper_fn=entrant_wrapper, check_fn=check_fn_gpt
     )
+
 
 def get_param_groups_by_weight_decay(module):
     """Get param groups."""
@@ -328,26 +346,21 @@ def get_param_groups_by_weight_decay(module):
     for module_ in module.modules():
         # if isinstance(module_, FusedLayerNorm) or
         if isinstance(module_, LayerNorm):
-            for p in list(
-                module_._parameters.values()
-            ):  # pylint: disable=invalid-name,protected-access
+            for p in list(module_._parameters.values()):  # pylint: disable=invalid-name,protected-access
                 if p is not None and id(p) not in param_ids:
                     no_weight_decay_params["params"].append(p)
                     param_ids.add(id(p))
         else:
-            for n, p in list(
-                module_._parameters.items()
-            ):  # pylint: disable=invalid-name,protected-access
+            for n, p in list(module_._parameters.items()):  # pylint: disable=invalid-name,protected-access
                 if p is not None and n != "bias" and id(p) not in param_ids:
                     weight_decay_params["params"].append(p)
                     param_ids.add(id(p))
-            for n, p in list(
-                module_._parameters.items()
-            ):  # pylint: disable=invalid-name,protected-access
+            for n, p in list(module_._parameters.items()):  # pylint: disable=invalid-name,protected-access
                 if p is not None and n == "bias" and id(p) not in param_ids:
                     no_weight_decay_params["params"].append(p)
                     param_ids.add(id(p))
     return weight_decay_params, no_weight_decay_params
+
 
 class AnnealingLR:  # pylint: disable=too-many-instance-attributes
     """Anneals the learning rate."""
@@ -365,7 +378,6 @@ class AnnealingLR:  # pylint: disable=too-many-instance-attributes
         use_checkpoint_lr_scheduler=True,
         override_lr_scheduler=False,
     ):
-
         # Class values.
         self.optimizer = optimizer
         self.start_lr = start_lr
@@ -380,7 +392,7 @@ class AnnealingLR:  # pylint: disable=too-many-instance-attributes
         self.use_checkpoint_lr_scheduler = use_checkpoint_lr_scheduler
         if self.override_lr_scheduler:
             assert not self.use_checkpoint_lr_scheduler, (
-                "both override and " "use-checkpoint are set."
+                "both override and use-checkpoint are set."
             )
         # Set the learning rate
         self.step(self.num_iters)
@@ -408,7 +420,11 @@ class AnnealingLR:  # pylint: disable=too-many-instance-attributes
                     / (self.end_iter - self.plateau_iter)
                 )
         elif self.decay_style == "cosine":
-            lr = self.start_lr / 2.0 * (math.cos(math.pi * num_iters_ / self.end_iter) + 1)
+            lr = (
+                self.start_lr
+                / 2.0
+                * (math.cos(math.pi * num_iters_ / self.end_iter) + 1)
+            )
         elif self.decay_style == "exponential":
             # exp(-0.693) = 1/2
             lr = self.start_lr * math.exp(-0.693 * num_iters_ / self.end_iter)
@@ -446,27 +462,34 @@ class AnnealingLR:  # pylint: disable=too-many-instance-attributes
             return cls_value
 
         if not self.use_checkpoint_lr_scheduler:
-            assert (
-                cls_value == sd_value
-            ), f"AnnealingLR: class input value and checkpoint values for {name} do not match"
+            assert cls_value == sd_value, (
+                f"AnnealingLR: class input value and checkpoint values for {name} do not match"
+            )
         if self.rank == 0:
             _logger.info(f" > using checkpoint value {sd_value} for {name}")
         return sd_value
 
     def load_state_dict(self, sd):
         """Load state dict."""
-        self.start_lr = self._check_and_set(self.start_lr, sd["start_lr"], "learning rate")
-        self.min_lr = self._check_and_set(self.min_lr, sd["min_lr"], "minimum learning rate")
+        self.start_lr = self._check_and_set(
+            self.start_lr, sd["start_lr"], "learning rate"
+        )
+        self.min_lr = self._check_and_set(
+            self.min_lr, sd["min_lr"], "minimum learning rate"
+        )
         self.warmup_iter = self._check_and_set(
             self.warmup_iter, sd["warmup_iter"], "warmup iterations"
         )
         self.end_iter = self._check_and_set(
             self.end_iter, sd["end_iter"], "total number of iterations"
         )
-        self.decay_style = self._check_and_set(self.decay_style, sd["decay_style"], "decay style")
+        self.decay_style = self._check_and_set(
+            self.decay_style, sd["decay_style"], "decay style"
+        )
 
         self.num_iters = sd["num_iters"]
         self.step(self.num_iters)
+
 
 def get_learning_rate_scheduler(optimizer, args):
     """Get learning rate scheduler."""
@@ -496,22 +519,59 @@ def get_learning_rate_scheduler(optimizer, args):
 
     return lr_scheduler
 
-def create_streaming_dataloader(dataset,
-                      tokenizer,
-                      name=None,
-                      global_rank=0,
-                      batch_size=1,
-                      max_context_width=4096,
-                      workers=4,
-                      split=None):
+
+def create_streaming_dataloader(
+    dataset,
+    tokenizer,
+    name=None,
+    global_rank=0,
+    batch_size=1,
+    max_context_width=4096,
+    workers=4,
+    split=None,
+):
     print(f"dataset={dataset}, name={name}")
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer,legacy=False)
-    data = load_dataset(dataset, name=name, streaming=True, split=split).shuffle(42+global_rank)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer, legacy=False)
+
+    # Use pre-resolved data files manifest if available to avoid every
+    # process hitting the HuggingFace API for paginated file listings
+    # and repo_info() validation, which causes HTTP 429 rate-limit errors
+    # on large clusters with many concurrent processes.
+    data_files = None
+    use_manifest = False
+    manifest_path = os.environ.get("HF_DATA_FILES_MANIFEST")
+    if manifest_path and os.path.isfile(manifest_path):
+        try:
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+            if split and split in manifest:
+                data_files = {split: manifest[split]}
+                use_manifest = True
+                print(
+                    f"Using pre-resolved data files for split={split} "
+                    f"({len(manifest[split])} files, first={manifest[split][0][:80]})"
+                )
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Warning: could not read manifest {manifest_path}: {e}")
+
+    if use_manifest:
+        # Load as generic JSON dataset using the manifest file paths.
+        # Local file paths use LocalFileSystem (no HF API calls at all).
+        # This avoids HuggingFace 429 rate limits from 128+ DataLoader workers.
+        data = load_dataset(
+            "json", streaming=True, split=split, data_files=data_files
+        ).shuffle(42 + global_rank)
+    else:
+        data = load_dataset(
+            dataset, name=name, streaming=True, split=split, data_files=data_files
+        ).shuffle(42 + global_rank)
     train_concat_dataset = ConcatTokensDataset(data, tokenizer, max_context_width, True)
-    train_dataloader = DataLoader(train_concat_dataset,
-                                       batch_size=batch_size,
-                                       num_workers=workers,
-                                       pin_memory=True,
-                                       prefetch_factor=4,
-                                       timeout=600)
+    train_dataloader = DataLoader(
+        train_concat_dataset,
+        batch_size=batch_size,
+        num_workers=workers,
+        pin_memory=True,
+        prefetch_factor=4,
+        timeout=600,
+    )
     return train_dataloader

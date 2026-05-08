@@ -61,7 +61,7 @@ jobs:
           
           # Add host to known hosts with retry
           for i in {1..5}; do
-            if ssh-keyscan -H ${{ env.SLURM_HOST }} >> ~/.ssh/known_hosts 2>/dev/null; then
+            if ssh-keyscan -H "${{ env.SLURM_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null; then
               echo "SSH keyscan successful"
               break
             fi
@@ -70,8 +70,8 @@ jobs:
           done
           
           REMOTE_BUILD_PATH="${{ env.BASE_PATH }}/megatron-builds/${{ github.run_id }}-${{ matrix.cluster }}"
-          echo "remote_build_path=$REMOTE_BUILD_PATH" >> $GITHUB_OUTPUT
-          echo "REMOTE_BUILD_PATH=$REMOTE_BUILD_PATH" >> $GITHUB_ENV
+          echo "remote_build_path=$REMOTE_BUILD_PATH" >> "$GITHUB_OUTPUT"
+          echo "REMOTE_BUILD_PATH=$REMOTE_BUILD_PATH" >> "$GITHUB_ENV"
 
       - name: Transfer Code to Cluster
         run: |
@@ -99,7 +99,9 @@ jobs:
           ENROOT_IMAGE="${{ env.BASE_PATH }}/enroot-images/megatron-${{ github.run_id }}-${{ matrix.cluster }}.sqsh"
           
           echo "Building Megatron-LM image on cluster..."
+          # shellcheck disable=SC2087
           ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            -o ServerAliveInterval=60 -o ServerAliveCountMax=5 \
             ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} << EOF
             set -e
             cd $MEGATRON_DIR
@@ -111,9 +113,9 @@ jobs:
             echo "Enroot image created at: $ENROOT_IMAGE"
             # Clean up Docker image to save space
             docker rmi aws-megatron-lm || true
-EOF
+          EOF
           
-          echo "enroot_image_path=$ENROOT_IMAGE" >> $GITHUB_OUTPUT
+          echo "enroot_image_path=$ENROOT_IMAGE" >> "$GITHUB_OUTPUT"
           echo "Container build completed successfully!"
 
       - name: Verify Container Build
@@ -129,7 +131,7 @@ EOF
               echo "✗ Enroot image not found: \$ENROOT_IMAGE"
               exit 1
             fi
-EOF
+          EOF
 
       - name: Cleanup Build Directory
         if: always()
@@ -163,7 +165,7 @@ EOF
           mkdir -p ~/.ssh
           echo "${{ secrets.SLURM_SSH_KEY }}" > ~/.ssh/slurm_key
           chmod 600 ~/.ssh/slurm_key
-          ssh-keyscan -H ${{ env.SLURM_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -H "${{ env.SLURM_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Remove Enroot Images
         run: |
@@ -176,4 +178,4 @@ EOF
             echo "Enroot images cleaned up"
             # List remaining images for verification
             ls -lh ${{ env.BASE_PATH }}/enroot-images/ | grep megatron || echo "No megatron images remaining"
-EOF
+          EOF

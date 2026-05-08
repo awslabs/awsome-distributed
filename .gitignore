@@ -168,3 +168,4 @@ micro-benchmarks/nccl-tests/slurm/find_bad_nodes/logs/analysis_summary_*.txt
 micro-benchmarks/nccl-tests/slurm/find_bad_nodes/logs/node_combinations_*.txt
 .testenv
 micro-benchmarks/nccl-tests/slurm/topology-aware-nccl-tests/debug_topology.json
+log.failed

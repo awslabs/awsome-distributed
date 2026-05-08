@@ -1,0 +1,101 @@
+name: PR Lint
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint Changed Files
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout PR Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Get Changed Files
+        id: changed
+        run: |
+          # Get the list of files changed in this PR
+          MERGE_BASE=$(git merge-base "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")
+
+          PY_FILES=$(git diff --name-only --diff-filter=ACMR "$MERGE_BASE" -- '*.py' || true)
+          SH_FILES=$(git diff --name-only --diff-filter=ACMR "$MERGE_BASE" -- '*.sh' || true)
+
+          {
+            echo "py_files<<DELIM"
+            echo "$PY_FILES"
+            echo "DELIM"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "sh_files<<DELIM"
+            echo "$SH_FILES"
+            echo "DELIM"
+          } >> "$GITHUB_OUTPUT"
+
+          PY_COUNT=$(echo "$PY_FILES" | grep -c '.' || true)
+          SH_COUNT=$(echo "$SH_FILES" | grep -c '.' || true)
+          echo "py_count=$PY_COUNT" >> "$GITHUB_OUTPUT"
+          echo "sh_count=$SH_COUNT" >> "$GITHUB_OUTPUT"
+
+          echo "Changed Python files: $PY_COUNT"
+          echo "Changed Shell files: $SH_COUNT"
+
+      - name: Setup Python
+        if: steps.changed.outputs.py_count != '0'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Lint Python Files
+        if: steps.changed.outputs.py_count != '0'
+        run: |
+          pip install flake8
+
+          echo "Linting changed Python files..."
+          echo "${{ steps.changed.outputs.py_files }}" | while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            [ -f "$f" ] || continue
+            echo "  $f"
+          done
+
+          # Run flake8 on changed files only
+          # E501: line too long (common in training scripts)
+          # W503: line break before binary operator (PEP8 changed stance)
+          # E402: module level import not at top of file (common in conditional imports)
+          echo "${{ steps.changed.outputs.py_files }}" | tr '\n' '\0' | xargs -0 -r \
+            flake8 --max-line-length=120 --count --show-source \
+              --ignore=E501,W503,E402 \
+              --statistics
+
+      - name: Check Shell Script Syntax
+        if: steps.changed.outputs.sh_count != '0'
+        run: |
+          echo "Checking shell script syntax..."
+          ERRORS=0
+
+          echo "${{ steps.changed.outputs.sh_files }}" | while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            [ -f "$f" ] || continue
+            echo "  Checking: $f"
+            if ! bash -n "$f" 2>&1; then
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "Found syntax errors in $ERRORS shell script(s)"
+            exit 1
+          fi
+
+          echo "All shell scripts passed syntax check"

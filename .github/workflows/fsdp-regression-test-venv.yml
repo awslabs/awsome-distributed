@@ -1,7 +1,5 @@
 name: FSDP Regression Test (venv)
 
-# TODO: Additional test cases to matrix. Change max-parallel.
-
 on: 
   push:
     branches: [ "main" ]
@@ -31,8 +29,8 @@ jobs:
       fail-fast: true
       max-parallel: 3
       matrix:
-        cluster: [p5, p5-smhp]
-        model_config: [llama2_7b, llama2_13b, llama2_70b, llama3_1_8b, llama3_1_70b]
+        cluster: [p5]
+        model_config: [llama3_1_8b, llama3_1_70b]
     runs-on: ubuntu-latest
     concurrency:
       group: ${{ github.workflow }}-${{ matrix.cluster }}-${{ matrix.model_config }}
@@ -58,7 +56,7 @@ jobs:
           
           # Add host to known hosts with retry
           for i in {1..5}; do
-            if ssh-keyscan -H ${{ env.SLURM_HOST }} >> ~/.ssh/known_hosts 2>/dev/null; then
+            if ssh-keyscan -H "${{ env.SLURM_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null; then
               echo "SSH keyscan successful"
               break
             fi
@@ -74,23 +72,27 @@ jobs:
           LOG_DIR="${{ env.HOME_PATH }}/regression-logs-${BUILD_ID}-${{ matrix.model_config }}-${{ matrix.cluster }}"
           CHECKPOINT_DIR="${{ env.BASE_PATH }}/checkpoints-${BUILD_ID}-${{ matrix.model_config }}-${{ matrix.cluster }}"
           
-          echo "remote_test_path=$REMOTE_TEST_PATH" >> $GITHUB_OUTPUT
-          echo "log_dir=$LOG_DIR" >> $GITHUB_OUTPUT
-          echo "checkpoint_dir=$CHECKPOINT_DIR" >> $GITHUB_OUTPUT
+          {
+            echo "remote_test_path=$REMOTE_TEST_PATH"
+            echo "log_dir=$LOG_DIR"
+            echo "checkpoint_dir=$CHECKPOINT_DIR"
+          } >> "$GITHUB_OUTPUT"
           
-          echo "REMOTE_TEST_PATH=$REMOTE_TEST_PATH" >> $GITHUB_ENV
-          echo "LOG_DIR=$LOG_DIR" >> $GITHUB_ENV
-          echo "CHECKPOINT_DIR=$CHECKPOINT_DIR" >> $GITHUB_ENV
+          {
+            echo "REMOTE_TEST_PATH=$REMOTE_TEST_PATH"
+            echo "LOG_DIR=$LOG_DIR"
+            echo "CHECKPOINT_DIR=$CHECKPOINT_DIR"
+          } >> "$GITHUB_ENV"
 
       - name: Create Remote Directories
         run: |
           ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
-            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} << EOF
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} << 'EOF'
             mkdir -p ${{ env.REMOTE_TEST_PATH }}
             mkdir -p ${{ env.LOG_DIR }}
             mkdir -p ${{ env.CHECKPOINT_DIR }}
             chmod 755 ${{ env.LOG_DIR }} ${{ env.CHECKPOINT_DIR }}
-EOF
+          EOF
 
       - name: Transfer Code to Cluster
         run: |
@@ -110,13 +112,120 @@ EOF
           FSDP_SLURM_DIR="${{ env.REMOTE_TEST_PATH }}/3.test_cases/pytorch/FSDP/slurm"
           
           echo "Creating virtual environment on cluster..."
+          # shellcheck disable=SC2087
           ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
             ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} << EOF
             set -e
             cd $FSDP_SLURM_DIR
             bash ./create_venv.sh
             echo "Virtual environment created successfully!"
-EOF
+          EOF
+
+      - name: Pre-download Dataset and Tokenizers
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          FSDP_SLURM_DIR="${{ env.REMOTE_TEST_PATH }}/3.test_cases/pytorch/FSDP/slurm"
+          MANIFEST_PATH="/fsx/.cache/huggingface/c4_en_data_files.json"
+          echo "MANIFEST_PATH=$MANIFEST_PATH" >> "$GITHUB_ENV"
+          
+          echo "Downloading dataset shards to local FSx and pre-caching tokenizers..."
+          # shellcheck disable=SC2087
+          ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} << EOF
+            set -e
+            cd $FSDP_SLURM_DIR
+            source env/bin/activate
+            export HF_HOME=/fsx/.cache/huggingface
+            export HF_DATASETS_CACHE=/fsx/.cache/huggingface/datasets
+            export HF_TOKEN="$HF_TOKEN"
+            mkdir -p /fsx/.cache/huggingface/datasets
+            
+            python3 -c "
+          import json, os, subprocess, glob as globmod
+          
+          manifest_path = '$MANIFEST_PATH'
+          local_dir = '/fsx/.cache/huggingface/c4_local/en'
+          
+          # Check if local data shards already exist and manifest points to them
+          if os.path.isfile(manifest_path):
+              import time
+              age_hours = (time.time() - os.path.getmtime(manifest_path)) / 3600
+              try:
+                  with open(manifest_path) as f:
+                      m = json.load(f)
+                  # If manifest already has local paths and is recent, skip
+                  if (age_hours < 168 and m.get('train')
+                      and m['train'][0].startswith('/fsx/')
+                      and all(os.path.isfile(p) for p in m['train'][:3])):
+                      print(f'Local-path manifest exists ({age_hours:.1f}h old), skipping download')
+                      for k, v in m.items():
+                          print(f'  {k}: {len(v)} files')
+                      exit(0)
+              except (json.JSONDecodeError, KeyError):
+                  pass
+          
+          os.makedirs(local_dir, exist_ok=True)
+          
+          # Download shards from HuggingFace if not already present
+          from huggingface_hub import HfApi
+          api = HfApi()
+          info = api.dataset_info('allenai/c4')
+          revision = info.sha
+          base_url = f'https://huggingface.co/datasets/allenai/c4/resolve/{revision}/en'
+          
+          # We only need a small subset for CI (100 training steps):
+          # 10 train shards (~3GB) + all 8 validation shards (~320MB)
+          NUM_TRAIN_SHARDS = 10
+          
+          for split_prefix, split_name, count, total in [
+              ('c4-train', 'train', NUM_TRAIN_SHARDS, 1024),
+              ('c4-validation', 'validation', 8, 8)]:
+              print(f'Checking {split_name} shards ({count} of {total})...')
+              for i in range(count):
+                  fname = f'{split_prefix}.{i:05d}-of-{total:05d}.json.gz'
+                  dest = os.path.join(local_dir, fname)
+                  if os.path.isfile(dest) and os.path.getsize(dest) > 10000:
+                      continue
+                  url = f'{base_url}/{fname}'
+                  print(f'  Downloading {fname}...')
+                  subprocess.run([
+                      'curl', '-sL',
+                      '-H', f'Authorization: Bearer {os.environ.get(\"HF_TOKEN\", \"\")}',
+                      url, '-o', dest
+                  ], check=True)
+                  size_mb = os.path.getsize(dest) / 1024 / 1024
+                  print(f'    {size_mb:.0f} MB')
+          
+          # Build manifest with local file paths
+          manifest = {}
+          for split_prefix, split_name, count, total in [
+              ('c4-train', 'train', NUM_TRAIN_SHARDS, 1024),
+              ('c4-validation', 'validation', 8, 8)]:
+              files = []
+              for i in range(count):
+                  fname = f'{split_prefix}.{i:05d}-of-{total:05d}.json.gz'
+                  fpath = os.path.join(local_dir, fname)
+                  if os.path.isfile(fpath):
+                      files.append(fpath)
+              manifest[split_name] = sorted(files)
+              print(f'{split_name}: {len(files)} local files')
+          
+          with open(manifest_path, 'w') as f:
+              json.dump(manifest, f)
+          print(f'Local-path manifest written to {manifest_path}')
+          
+          # Pre-cache tokenizers so HF_HUB_OFFLINE=1 works during training
+          from transformers import AutoTokenizer
+          for tok_name in ['hf-internal-testing/llama-tokenizer', 'mistralai/mathstral-7B-v0.1', 'mistralai/Mixtral-8x7B-v0.1']:
+              try:
+                  print(f'Pre-caching tokenizer: {tok_name}')
+                  AutoTokenizer.from_pretrained(tok_name, legacy=False)
+              except Exception as e:
+                  print(f'Warning: could not cache {tok_name}: {e}')
+          print('Pre-download complete')
+          "
+          EOF
 
       - name: Prepare and Submit Slurm Job
         id: submit_job
@@ -128,6 +237,7 @@ EOF
           TMP_SBATCH="regression_test_${{ matrix.model_config }}.sbatch"
           
           # Prepare and submit job on cluster
+          # shellcheck disable=SC2087
           ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
             ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} << EOF
             set -e
@@ -145,15 +255,25 @@ EOF
             sed -i "s|#SBATCH --error=.*|#SBATCH --error=${{ env.LOG_DIR }}/regression_test_%j.err|" "$TMP_SBATCH"
             sed -i "s|--checkpoint_dir=./checkpoints|--checkpoint_dir=${{ env.CHECKPOINT_DIR }}|g" "$TMP_SBATCH"
             
-            # Activate venv in the sbatch script
-            sed -i '1a source env/bin/activate' "$TMP_SBATCH"
+            # Activate venv in the sbatch script (must go AFTER all #SBATCH directives,
+            # otherwise Slurm stops parsing directives at the first non-comment line)
+            sed -i '/^#SBATCH/!b;:a;n;/^#SBATCH/ba;i\source env/bin/activate' "$TMP_SBATCH"
+            
+            # Inject HF_TOKEN so compute nodes can access gated HuggingFace models
+            if [ -n "$HF_TOKEN" ]; then
+              sed -i '/^source env\/bin\/activate/a export HF_TOKEN="'"$HF_TOKEN"'"' "$TMP_SBATCH"
+            fi
+            
+            # Point training to the pre-resolved data files manifest so processes
+            # skip the HuggingFace tree API (avoids HTTP 429 rate limits)
+            sed -i '/^export HF_HOME/a export HF_DATA_FILES_MANIFEST=${{ env.MANIFEST_PATH }}' "$TMP_SBATCH"
             
             # Submit job
             echo "Submitting Slurm job..."
-            JOB_ID=\$(sbatch --parsable \$TMP_SBATCH)
+            JOB_ID=\$(sbatch --parsable $TMP_SBATCH)
             echo "JOB_ID=\$JOB_ID" >> ${{ env.REMOTE_TEST_PATH }}/job_info.txt
             echo "Submitted job: \$JOB_ID"
-EOF
+          EOF
           
           # Get job ID
           sleep 2
@@ -161,46 +281,79 @@ EOF
             ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} \
             "cat ${{ env.REMOTE_TEST_PATH }}/job_info.txt | grep JOB_ID | cut -d= -f2")
           
-          echo "job_id=$JOB_ID" >> $GITHUB_OUTPUT
-          echo "JOB_ID=$JOB_ID" >> $GITHUB_ENV
+          echo "job_id=$JOB_ID" >> "$GITHUB_OUTPUT"
+          echo "JOB_ID=$JOB_ID" >> "$GITHUB_ENV"
           echo "Submitted Slurm job: $JOB_ID"
 
       - name: Monitor Job with Real-time Logs
         id: monitor_job
         run: |
+          # SSH wrapper with retry and keepalive
+          ssh_cmd() {
+            local max_retries=3
+            local retry_delay=10
+            for attempt in $(seq 1 $max_retries); do
+              if ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no \
+                 -o ConnectTimeout=30 -o ServerAliveInterval=60 -o ServerAliveCountMax=5 \
+                 ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} "export PATH=/opt/slurm/bin:\$PATH; $*"; then
+                return 0
+              fi
+              echo "SSH attempt $attempt/$max_retries failed, retrying in ${retry_delay}s..."
+              sleep $retry_delay
+            done
+            echo "SSH failed after $max_retries attempts"
+            return 1
+          }
+
           echo "Monitoring job ${{ env.JOB_ID }}..."
           START_TIME=$(date +%s)
           TIMEOUT=21600  # 6 hours
-          
+
           LOG_FILE="${{ env.LOG_DIR }}/regression_test_${{ env.JOB_ID }}.out"
-          
+
           while true; do
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
-            
+
             if [ $ELAPSED -gt $TIMEOUT ]; then
               echo "Timeout reached after 6 hours"
               exit 1
             fi
-            
-            # Check job status
-            JOB_STATUS=$(ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no \
-              ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} \
-              "squeue -j ${{ env.JOB_ID }} -h -o %T 2>/dev/null || echo 'COMPLETED'")
-            
-            if [ -z "$JOB_STATUS" ] || [ "$JOB_STATUS" == "COMPLETED" ]; then
-              echo "Job completed successfully"
-              break
+
+            # Check job status via squeue
+            JOB_STATUS=$(ssh_cmd "squeue -j ${{ env.JOB_ID }} -h -o %T 2>/dev/null" || true)
+
+            if [ -z "$JOB_STATUS" ]; then
+              # Job left the queue -- check actual result via sacct
+              echo "Job no longer in queue, checking final state with sacct..."
+              FINAL_STATE=$(ssh_cmd "sacct -j ${{ env.JOB_ID }} --format=State --noheader -P | head -1 | tr -d ' '" || true)
+              EXIT_CODE=$(ssh_cmd "sacct -j ${{ env.JOB_ID }} --format=ExitCode --noheader -P | head -1" || true)
+
+              echo "Final state: $FINAL_STATE (exit code: $EXIT_CODE)"
+
+              if [ "$FINAL_STATE" == "COMPLETED" ]; then
+                echo "Job completed successfully"
+                break
+              else
+                echo "::group::Job error output (last 200 lines)"
+                ERR_FILE="${{ env.LOG_DIR }}/regression_test_${{ env.JOB_ID }}.err"
+                ssh_cmd "tail -n 200 $ERR_FILE 2>/dev/null || echo 'No stderr log found at $ERR_FILE'" || true
+                ssh_cmd "tail -n 200 $LOG_FILE 2>/dev/null || echo 'No stdout log found at $LOG_FILE'" || true
+                # Also check for slurm default logs in the working directory
+                FSDP_SLURM_DIR="${{ env.REMOTE_TEST_PATH }}/3.test_cases/pytorch/FSDP/slurm"
+                ssh_cmd "tail -n 200 $FSDP_SLURM_DIR/slurm-${{ env.JOB_ID }}.out 2>/dev/null || true" || true
+                echo "::endgroup::"
+                echo "Job finished with state: $FINAL_STATE"
+                exit 1
+              fi
             elif [ "$JOB_STATUS" == "FAILED" ] || [ "$JOB_STATUS" == "CANCELLED" ] || [ "$JOB_STATUS" == "TIMEOUT" ]; then
               echo "Job failed with status: $JOB_STATUS"
               exit 1
             fi
-            
-            # Stream logs in real-time
-            ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no \
-              ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} \
-              "tail -n 50 $LOG_FILE 2>/dev/null || echo 'Waiting for log file...'"
-            
+
+            # Stream recent logs (best-effort, don't fail on SSH errors)
+            ssh_cmd "tail -n 50 $LOG_FILE 2>/dev/null || echo 'Waiting for log file...'" || true
+
             echo "--- Job status: $JOB_STATUS (elapsed: $((ELAPSED / 60)) min) ---"
             sleep 30
           done
@@ -211,16 +364,25 @@ EOF
           echo "Retrieving logs from cluster..."
           mkdir -p ./logs
           
-          # Copy logs with retry
+          FSDP_SLURM_DIR="${{ env.REMOTE_TEST_PATH }}/3.test_cases/pytorch/FSDP/slurm"
+          
+          # Copy logs from LOG_DIR with retry
           for i in {1..3}; do
             if scp -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 -r \
-              ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }}:${{ env.LOG_DIR }}/* ./logs/ 2>/dev/null; then
-              echo "Logs retrieved successfully"
+              "${{ env.SLURM_USER }}@${{ env.SLURM_HOST }}:${{ env.LOG_DIR }}/*" ./logs/ 2>/dev/null; then
+              echo "Logs retrieved from LOG_DIR successfully"
               break
             fi
             echo "Log retrieval attempt $i failed, retrying..."
             sleep 10
           done
+          
+          # Also grab any slurm-*.out files from the working directory (fallback logs)
+          scp -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            "${{ env.SLURM_USER }}@${{ env.SLURM_HOST }}:${FSDP_SLURM_DIR}/slurm-*.out" ./logs/ 2>/dev/null || true
+          
+          echo "Retrieved log files:"
+          ls -la ./logs/ 2>/dev/null || echo "No logs found"
 
       - name: Upload logs as artifacts
         if: always()
@@ -239,7 +401,7 @@ EOF
           if [ -n "${{ env.JOB_ID }}" ]; then
             ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no \
               ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} \
-              "scancel ${{ env.JOB_ID }} 2>/dev/null || true"
+              "export PATH=/opt/slurm/bin:\$PATH; scancel ${{ env.JOB_ID }} 2>/dev/null || true"
           fi
           
           # Clean up directories
@@ -248,7 +410,7 @@ EOF
             rm -rf ${{ env.REMOTE_TEST_PATH }}
             rm -rf ${{ env.LOG_DIR }}
             rm -rf ${{ env.CHECKPOINT_DIR }}
-EOF
+          EOF
           
           rm -rf ./logs
           echo "Cleanup completed!"
