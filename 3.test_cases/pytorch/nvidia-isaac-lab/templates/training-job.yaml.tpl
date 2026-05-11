@@ -37,6 +37,16 @@ spec:
               rm -rf /workspace/IsaacLab/logs
               ln -sf ${JOB_FSX_LOG_DIR} /workspace/IsaacLab/logs
 
+              # Auto-resume: find the latest checkpoint on FSx from a previous run
+              LATEST_CKPT=$$(find ${JOB_FSX_LOG_DIR} -name "best_agent.pt" -printf "%T@ %p\n" 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2)
+              if [ -n "$$LATEST_CKPT" ]; then
+                echo "=== RESUMING from checkpoint: $$LATEST_CKPT ==="
+                RESUME_FLAG="--checkpoint $$LATEST_CKPT"
+              else
+                echo "=== Starting fresh (no checkpoint found) ==="
+                RESUME_FLAG=""
+              fi
+
               echo "=== Starting Master (${JOB_NUM_NODES}-node, $$((${JOB_GPUS} * ${JOB_NUM_NODES})) GPUs total, ${MAX_ITERATIONS} iterations) ==="
               /isaac-sim/python.sh -m torch.distributed.run \
                 --nproc_per_node=${JOB_GPUS} \
@@ -49,7 +59,8 @@ spec:
                 --distributed \
                 --task=${TASK} \
                 --max_iterations=${MAX_ITERATIONS} \
-                --headless
+                --headless \
+                $$RESUME_FLAG
 
               echo "=== Training Complete at $$(date) ==="
               find ${JOB_FSX_LOG_DIR} -name "*.pt" -ls 2>/dev/null
@@ -62,6 +73,8 @@ spec:
               value: "all"
             - name: NVIDIA_DRIVER_CAPABILITIES
               value: "all"
+            - name: ISAACLAB_INIT_LOCK
+              value: "/tmp/isaaclab_init.lock"
             - name: MLFLOW_TRACKING_URI
               value: "${MLFLOW_TRACKING_URI}"
             - name: MLFLOW_EXPERIMENT_NAME
@@ -117,6 +130,17 @@ spec:
               nvidia-smi -L
 
               cd /workspace/IsaacLab
+
+              # Auto-resume: find the latest checkpoint on FSx from a previous run
+              LATEST_CKPT=$$(find ${JOB_FSX_LOG_DIR} -name "best_agent.pt" -printf "%T@ %p\n" 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2)
+              if [ -n "$$LATEST_CKPT" ]; then
+                echo "=== RESUMING from checkpoint: $$LATEST_CKPT ==="
+                RESUME_FLAG="--checkpoint $$LATEST_CKPT"
+              else
+                echo "=== Starting fresh (no checkpoint found) ==="
+                RESUME_FLAG=""
+              fi
+
               echo "=== Starting Worker ==="
               /isaac-sim/python.sh -m torch.distributed.run \
                 --nproc_per_node=${JOB_GPUS} \
@@ -129,7 +153,8 @@ spec:
                 --distributed \
                 --task=${TASK} \
                 --max_iterations=${MAX_ITERATIONS} \
-                --headless
+                --headless \
+                $$RESUME_FLAG
 
               echo "=== Worker Complete at $$(date) ==="
             env:
@@ -141,6 +166,8 @@ spec:
               value: "all"
             - name: NVIDIA_DRIVER_CAPABILITIES
               value: "all"
+            - name: ISAACLAB_INIT_LOCK
+              value: "/tmp/isaaclab_init.lock"
             - name: MLFLOW_TRACKING_URI
               value: "${MLFLOW_TRACKING_URI}"
             - name: MLFLOW_EXPERIMENT_NAME
