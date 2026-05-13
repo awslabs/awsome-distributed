@@ -868,3 +868,35 @@ variable "enable_guardduty_cleanup" {
   type        = bool
   default     = false
 }
+
+# ==========================================
+# Cilium CNI Configuration
+# ==========================================
+
+variable "enable_cilium" {
+  description = "Enable Cilium CNI. When true and creating a new EKS cluster, deploys Cilium and conditionally skips the VPC CNI addon based on cilium_mode."
+  type        = bool
+  default     = false
+}
+
+variable "cilium_mode" {
+  description = "Cilium operating mode: overlay (VXLAN tunnel), eni (native ENI routing), chaining (policy-only on top of VPC CNI), or custom (user provides all Helm values via cilium_helm_values)."
+  type        = string
+  default     = "overlay"
+  validation {
+    condition     = contains(["overlay", "eni", "chaining", "custom"], var.cilium_mode)
+    error_message = "cilium_mode must be one of: overlay, eni, chaining, custom."
+  }
+}
+
+variable "cilium_version" {
+  description = "Cilium Helm chart version to deploy."
+  type        = string
+  default     = "1.19.4"
+}
+
+variable "cilium_helm_values" {
+  description = "Custom Helm values merged on top of mode-specific defaults. In custom mode, this IS the entire Helm config (no base defaults applied). For overlay/eni/chaining modes, these values override the base defaults."
+  type        = any
+  default     = {}
+}
