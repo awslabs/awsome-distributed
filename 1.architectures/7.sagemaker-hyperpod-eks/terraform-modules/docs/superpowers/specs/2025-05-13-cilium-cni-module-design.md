@@ -6,7 +6,7 @@
 
 ## Goal
 
-Enable users to replace the AWS VPC CNI with Cilium on HyperPod EKS clusters by setting `enable_cilium = true`. Support three routing modes (overlay, ENI, chaining) for new EKS deployments, and be compatible with existing EKS clusters that already have Cilium installed.
+Enable users to replace the AWS VPC CNI with Cilium on HyperPod EKS clusters by setting `enable_cilium = true`. Support three pre-configured routing modes (overlay, ENI, chaining) plus a fully custom mode for new EKS deployments, and be compatible with existing EKS clusters that already have Cilium installed.
 
 ## Supported Modes
 
@@ -15,12 +15,14 @@ Enable users to replace the AWS VPC CNI with Cilium on HyperPod EKS clusters by 
 | Overlay (VXLAN) | `"overlay"` | Skipped | Full CNI + IPAM | Cluster-pool (non-VPC-routable) |
 | ENI (native routing) | `"eni"` | Skipped | Full CNI + IPAM via AWS ENI | VPC-routable ENI IPs |
 | CNI Chaining | `"chaining"` | Kept active | eBPF policy/LB/encryption only | VPC CNI handles IPAM |
+| Custom | `"custom"` | Skipped | User-defined | User-defined |
 
 ### Mode trade-offs
 
 - **Overlay:** Most pods per node (not bounded by ENI limits), but pod-to-VPC traffic is SNATed. Webhooks must be host-networked or exposed via Service/Ingress since the API server cannot route to overlay IPs.
 - **ENI:** VPC-routable pod IPs (same as VPC CNI behavior), Cilium manages ENI allocation. Bounded by ENI/IP limits per instance type. IPv4 only.
 - **Chaining:** Least disruptive (VPC CNI still does networking), but some Cilium features limited (L7 policy, IPsec encryption).
+- **Custom:** Full user control. No base defaults applied — `cilium_helm_values` is the entire Helm configuration. User is responsible for providing a valid Cilium config. VPC CNI is skipped by default (user can override via `cilium_skip_vpc_cni = false` if they need chaining semantics).
 
 ## New Variable Surface (root `variables.tf`)
 
@@ -32,12 +34,12 @@ variable "enable_cilium" {
 }
 
 variable "cilium_mode" {
-  description = "Cilium operating mode: overlay (VXLAN tunnel), eni (native ENI routing), or chaining (policy-only on top of VPC CNI)."
+  description = "Cilium operating mode: overlay (VXLAN tunnel), eni (native ENI routing), chaining (policy-only on top of VPC CNI), or custom (user provides all Helm values)."
   type        = string
   default     = "overlay"
   validation {
-    condition     = contains(["overlay", "eni", "chaining"], var.cilium_mode)
-    error_message = "cilium_mode must be one of: overlay, eni, chaining."
+    condition     = contains(["overlay", "eni", "chaining", "custom"], var.cilium_mode)
+    error_message = "cilium_mode must be one of: overlay, eni, chaining, custom."
   }
 }
 
@@ -48,7 +50,7 @@ variable "cilium_version" {
 }
 
 variable "cilium_helm_values" {
-  description = "Custom Helm values merged on top of mode-specific defaults. For full control, provide all values here."
+  description = "Custom Helm values merged on top of mode-specific defaults. In custom mode, this IS the entire config (no base defaults applied). For overlay/eni/chaining modes, these values override the base defaults."
   type        = any
   default     = {}
 }
@@ -109,9 +111,10 @@ locals {
     overlay  = local.overlay_values
     eni      = local.eni_values
     chaining = local.chaining_values
+    custom   = {}
   }
 
-  # Deep merge: user values override base values
+  # Merge: user values override base values. In custom mode, base is empty so user values are the entire config.
   effective_values = merge(local.base_values[var.cilium_mode], var.cilium_helm_values)
 }
 ```
@@ -234,7 +237,8 @@ variable "enable_vxlan_rule" {
 
 ```hcl
 locals {
-  # Skip VPC CNI when Cilium replaces it (overlay or ENI mode) on new clusters
+  # Skip VPC CNI when Cilium replaces it (overlay, ENI, or custom mode) on new clusters.
+  # Chaining mode keeps VPC CNI active since Cilium only adds eBPF on top.
   skip_vpc_cni = var.enable_cilium && var.cilium_mode != "chaining"
 
   # Deploy Cilium module only when creating a new cluster with Cilium enabled
