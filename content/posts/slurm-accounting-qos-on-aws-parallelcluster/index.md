@@ -89,7 +89,7 @@ flowchart LR
             NAT["NAT Gateway"]
         end
         subgraph Priv["Private subnet(s)"]
-            GPU["Compute fleet<br/>2× g5.48xlarge<br/>(EFA, 8× A10G each)"]
+            GPU["Compute fleet<br/>2× g6.48xlarge<br/>(EFA, 8× L4 each)"]
             DB[("Aurora Serverless v2<br/>MySQL 8.0<br/>TLS required")]
             FSXL["FSx Lustre /fsx<br/>1.2 TB, P2 125 MB/s/TiB"]
             FSXZ["FSx OpenZFS /home<br/>64 GB, HA-1 64 MB/s"]
@@ -153,9 +153,9 @@ export AWS_REGION=us-east-1
 aws sts get-caller-identity   # confirm account before any deploy
 ```
 
-We'll use `us-east-1` throughout because `g5.48xlarge` is available in five
-of its AZs (`1a`, `1b`, `1c`, `1d`, `1f`), which gives us plenty of room to
-land the cluster and pick a second AZ for the DB.
+We'll use `us-east-1` throughout because `g6.48xlarge` is broadly available
+there, and the region has six AZs to pick from when capacity is tight in
+your preferred AZ.
 
 > **AZ caveat for FSx OpenZFS** — at the time of writing, the prereqs
 > template uses `DeploymentType: SINGLE_AZ_HA_1` for `/home`. HA_1 depends
@@ -449,10 +449,8 @@ Scheduling:
       ComputeResources:
         - Name: g6-48xl
           # g6.48xlarge: 8× NVIDIA L4 GPUs per node; 2 nodes = 16 GPUs total.
-          # The walkthrough originally targeted g5.48xlarge but us-east-1 was
-          # capacity-constrained on that SKU across multiple AZs; we landed
-          # an on-demand capacity reservation (ODCR) for g6.48xlarge in
-          # us-east-1a instead. The QoS scenarios below assume 8 GPUs/node.
+          # Pinned to a single AZ to match an on-demand capacity reservation
+          # (ODCR). The QoS scenarios below assume 8 GPUs/node.
           InstanceType: g6.48xlarge
           MinCount: 2                    # keep both nodes warm for the demo
           MaxCount: 2
@@ -673,7 +671,7 @@ Iam:
 ### Step 4 — Force the compute fleet to re-run OnNodeConfigured
 
 `OnNodeConfigured` runs once, when a compute node first comes up. The
-cluster's two `g5.48xlarge` nodes booted *before* we created `/home/shared/userlistfile`,
+cluster's two `g6.48xlarge` nodes booted *before* we created `/home/shared/userlistfile`,
 so they don't know about Alice, Bob, or Charlie yet. Force a recycle:
 
 ```bash
@@ -1142,10 +1140,7 @@ in production:
 | `slurmdbd` not running when `slurmctld` starts | Cluster boots, every `sacctmgr` command returns `Could not contact accounting storage` | PC handles this on create. For manual edits, restart `slurmdbd` first, *then* `slurmctld`. |
 | Secret rotation | `slurmdbd` keeps using the cached password from cluster-create time | A `pcluster update-cluster` re-reads the secret; plain Secrets Manager rotations don't propagate automatically. |
 | Setting `AccountingStorageTRES` after jobs have run | GPU TRES doesn't backfill onto old jobs | Set it in the PC YAML *before* the cluster ever runs a real job. |
-| Single-AZ DBSubnetGroup error | `DB Subnet Group [...] cannot have only one AZ` | Add a second private subnet in a different AZ before creating the DB stack. |
-| `InsufficientInstanceCapacity` for `g5.48xlarge` / `p4d` / `p5` in the prereqs AZ | Cluster create fails with chef stuck on `Waiting for static fleet capacity provisioning`, then a `WaitCondition timed out` from CloudFormation | AWS surfaces the working AZs in the error message ("You can currently get capacity by [...] choosing us-east-1c, us-east-1d, us-east-1f"). Point the SlurmQueue at a subnet in one of those AZs (you can reuse the secondary subnet you created for the DB), or pre-create subnets in three or four AZs and list them all under `Networking.SubnetIds`. FSx mounts still work cross-AZ via VPC DNS; cross-AZ data transfer applies. |
-| Multi-AZ subnet list + `Efa: Enabled: true` | `EfaMultiAzValidator` rejects the config: "EFA is not supported across Availability zones" | EFA is single-AZ. Either disable EFA (acceptable when not running tightly-coupled collectives) or commit to a single AZ and secure capacity via [On-Demand Capacity Reservations](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-capacity-reservations.html) / [EC2 Capacity Blocks for ML](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-capacity-blocks.html). |
-| `Multiple subnets configuration is not supported when using 'ComputeResource/InstanceType'` | Validator error on multi-subnet queue | Switch from the single-type form `InstanceType: g5.12xlarge` to the list form `Instances: [{InstanceType: g5.12xlarge}]`. The list form lets PC mix multiple instance types and is the only form that supports multi-subnet. |
+| `InsufficientInstanceCapacity` for the target instance type in your chosen AZ | Cluster create fails with chef stuck on `Waiting for static fleet capacity provisioning`, then a `WaitCondition timed out` from CloudFormation | AWS surfaces the working AZs in the error message ("You can currently get capacity by [...] choosing us-east-1c, us-east-1d, us-east-1f"). Secure capacity in a known AZ via an [On-Demand Capacity Reservation](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-capacity-reservations.html) or [EC2 Capacity Block for ML](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-capacity-blocks.html), then point `Networking.SubnetIds` at the matching AZ's subnet. |
 | `OnNodeConfigured` script fails on first boot → compute self-terminates → `HeadNodeWaitCondition timed out` | Cluster CREATE never finishes; failed-bootstrap counter on `clustermgtd.events` keeps incrementing | Author every `OnNodeConfigured` script to be **idempotent and tolerant of missing inputs**. In our walkthrough the script reads `/home/shared/userlistfile`, which doesn't exist on the very first boot (the head node hasn't gotten there yet). An unconditional `< /home/shared/userlistfile` bash redirect on a non-existent file exits non-zero, and PC interprets that as bootstrap failure. The fixed script checks `[ -f $USERLIST ] || exit 0` before reading. |
 | Aurora ACU floor charges 24/7 | Even an idle cluster bills ~$0.12/hr from Aurora | Acceptable; if you tear the cluster down nightly, also delete the DB stack. |
 | `require_secure_transport: ON` rejects plaintext clients | Manual `mysql` clients connecting directly fail with `SSL connection error` | Use `mysql --ssl-mode=REQUIRED --ssl-ca=/path/to/global-bundle.pem`, or connect via `slurmdbd` only. |
