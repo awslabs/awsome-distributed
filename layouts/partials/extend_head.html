@@ -1,0 +1,26 @@
+{{- /*
+  Render Mermaid diagrams in fenced ```mermaid ``` code blocks.
+  Hugo + Goldmark emit these as <pre><code class="language-mermaid">…</code></pre>.
+  This partial rewrites them in-place to <pre class="mermaid">…</pre>, then
+  initializes Mermaid (which auto-renders <pre class="mermaid"> nodes).
+*/ -}}
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+
+  function rewriteBlocks() {
+    document.querySelectorAll('code.language-mermaid').forEach((code) => {
+      const pre = code.parentElement;
+      const wrapper = document.createElement('pre');
+      wrapper.className = 'mermaid';
+      wrapper.textContent = code.textContent;
+      pre.replaceWith(wrapper);
+    });
+  }
+
+  function currentTheme() {
+    return document.body.classList.contains('dark') ? 'dark' : 'default';
+  }
+
+  rewriteBlocks();
+  mermaid.initialize({ startOnLoad: true, theme: currentTheme(), securityLevel: 'loose' });
+</script>
