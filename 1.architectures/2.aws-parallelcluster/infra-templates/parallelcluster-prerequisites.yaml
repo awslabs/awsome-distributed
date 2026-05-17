@@ -28,6 +28,7 @@ Metadata:
           default: Availability Zone configuration for the subnets
         Parameters:
           - PrimarySubnetAZ
+          - SecondarySubnetAZ
       - Label:
           default: Fsx Lustre storage size
         Parameters:
@@ -41,6 +42,8 @@ Metadata:
         default: Name of your VPC
       PrimarySubnetAZ:
         default: Availability zone id to deploy the primary subnets
+      SecondarySubnetAZ:
+        default: Availability zone id for the secondary private subnet (Multi-AZ /home + Aurora subnet group)
       CreateS3Endpoint:
         default: Create an S3 endpoint
 
@@ -57,6 +60,20 @@ Parameters:
   PrimarySubnetAZ:
     Description: Availability zone id in which the public subnet and primary private subnet will be created.
     Type: AWS::EC2::AvailabilityZone::Name
+
+  SecondarySubnetAZ:
+    Description: >-
+      Availability zone id for the secondary private subnet. Required for
+      Multi-AZ FSx OpenZFS (the /home file system) and for the
+      accounting-database CloudFormation template's Aurora DBSubnetGroup,
+      which requires subnets in two different Availability Zones. Leave
+      empty to default to the second AZ in the region (alphabetical), or
+      provide an explicit AZ name (e.g. us-east-1c) to override. Must differ
+      from PrimarySubnetAZ. NOTE: if your PrimarySubnetAZ happens to be the
+      second alphabetically, set SecondarySubnetAZ explicitly to avoid a
+      collision at FSx create time.
+    Type: String
+    Default: ""
 
   CreateS3Endpoint:
     AllowedValues:
@@ -104,9 +121,24 @@ Parameters:
     Default: 512
 
   HomeThroughput:
-    Description: "Home directories storage throughput MB/s"
+    Description: >-
+      FSx OpenZFS provisioned throughput for /home, in MB/s. The valid
+      values listed here are the discrete set supported by MULTI_AZ_1
+      (and SINGLE_AZ_HA_2). Default 160 is the minimum tier — bump it
+      if your workload actually needs the bandwidth, since FSx OpenZFS
+      prices throughput aggressively.
     Type: Number
-    Default: 512
+    Default: 160
+    AllowedValues:
+      - 160
+      - 320
+      - 640
+      - 1280
+      - 2560
+      - 3840
+      - 5120
+      - 7680
+      - 10240
 
 
 ###############################
@@ -115,6 +147,24 @@ Parameters:
 
 Conditions:
   S3EndpointCondition: !Equals [!Ref 'CreateS3Endpoint', 'true']
+  UseAutoSecondaryAZ: !Equals [!Ref SecondarySubnetAZ, '']
+
+###########
+## Rules ##
+###########
+
+Rules:
+  SecondaryAZDistinctWhenExplicit:
+    # Only fires when the user provides an explicit SecondarySubnetAZ. The
+    # default-empty case auto-selects !Select [1, !GetAZs ""], which we
+    # cannot validate against PrimarySubnetAZ at parameter-eval time.
+    RuleCondition: !Not [!Equals [!Ref SecondarySubnetAZ, '']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref PrimarySubnetAZ, !Ref SecondarySubnetAZ]]
+        AssertDescription: >-
+          SecondarySubnetAZ must differ from PrimarySubnetAZ. Multi-AZ FSx
+          OpenZFS and the Aurora DBSubnetGroup both require subnets in two
+          different Availability Zones.
 
 #########################
 ## VPC & Network Setup ##
@@ -226,6 +276,30 @@ Resources:
         - Key: Name
           Value: !Join [ ' ', [ !Ref VPCName, 'Private Subnet -', !Ref PrimarySubnetAZ ] ]
 
+  # Create the secondary private subnet in a different AZ. Carves the
+  # second /17 out of the private CIDR (10.1.128.0/17). Required for
+  # Multi-AZ FSx OpenZFS and for the Aurora DBSubnetGroup downstream.
+  SecondaryPrivateSubnet:
+    Type: AWS::EC2::Subnet
+    DependsOn: [VpcCidrBlock]
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Select [ 1, !Cidr [ !FindInMap [Networking, VPC, CIDR1], 2, 15 ]]
+      AvailabilityZone: !If
+        - UseAutoSecondaryAZ
+        - !Select [ 1, !GetAZs '' ]
+        - !Ref SecondarySubnetAZ
+      Tags:
+        - Key: Name
+          Value: !Join
+            - ' '
+            - - !Ref VPCName
+              - 'Private Subnet -'
+              - !If
+                - UseAutoSecondaryAZ
+                - !Select [ 1, !GetAZs '' ]
+                - !Ref SecondarySubnetAZ
+
   # Create and set the public route table
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -264,6 +338,13 @@ Resources:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PrimaryPrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  # also the secondary private subnet to the same private route table
+  SecondaryPrivateSubnetRTAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SecondaryPrivateSubnet
       RouteTableId: !Ref PrivateRouteTable
 
   # S3 endpoint
@@ -315,31 +396,43 @@ Resources:
     Type: AWS::FSx::FileSystem
     Properties:
       FileSystemType: OPENZFS
-      OpenZFSConfiguration: 
+      OpenZFSConfiguration:
         AutomaticBackupRetentionDays: 30
         CopyTagsToBackups: Yes
         CopyTagsToVolumes: Yes
         DailyAutomaticBackupStartTime: '19:00'
-        DeploymentType: SINGLE_AZ_HA_2
-        Options: 
+        # MULTI_AZ_1 is the only deployment type with universal regional
+        # coverage per the FSx OpenZFS availability table:
+        # https://docs.aws.amazon.com/fsx/latest/OpenZFSGuide/available-aws-regions.html
+        # The HA pair is split across PrimaryPrivateSubnet and
+        # SecondaryPrivateSubnet for cross-AZ failover.
+        DeploymentType: MULTI_AZ_1
+        PreferredSubnetId: !Ref PrimaryPrivateSubnet
+        # Floating-IP routes are added to the private RT so traffic from
+        # the compute fleet (in PrimaryPrivateSubnet) reaches whichever
+        # file server is currently active.
+        RouteTableIds:
+          - !Ref PrivateRouteTable
+        Options:
           - DELETE_CHILD_VOLUMES_AND_SNAPSHOTS
-        RootVolumeConfiguration: 
+        RootVolumeConfiguration:
           DataCompressionType: NONE
-          NfsExports: 
-            - ClientConfigurations: 
+          NfsExports:
+            - ClientConfigurations:
               -  Clients: '*'
-                 Options: 
+                 Options:
                     - rw
                     - no_root_squash
                     - crossmnt
         ThroughputCapacity: !Ref HomeThroughput
         WeeklyMaintenanceStartTime: '1:04:00'
-      SecurityGroupIds: 
+      SecurityGroupIds:
         - !Ref SecurityGroup
       StorageCapacity: !Ref HomeCapacity
       StorageType: SSD
-      SubnetIds: 
+      SubnetIds:
         - !Ref PrimaryPrivateSubnet
+        - !Ref SecondaryPrivateSubnet
 
 #############
 ## Outputs ##
@@ -360,6 +453,15 @@ Outputs:
     Description: ID of the primary private subnet
     Export:
       Name: !Sub ${AWS::StackName}-PrimaryPrivateSubnet
+  SecondaryPrivateSubnet:
+    Value: !Ref SecondaryPrivateSubnet
+    Description: >-
+      ID of the secondary private subnet (different AZ from the primary).
+      Pass this alongside the primary subnet to the accounting-database
+      template's SubnetIds parameter to satisfy the Aurora DBSubnetGroup
+      multi-AZ requirement.
+    Export:
+      Name: !Sub ${AWS::StackName}-SecondaryPrivateSubnet
   SecurityGroup:
     Value: !Ref SecurityGroup
     Description: SecurityGroup for Batch
