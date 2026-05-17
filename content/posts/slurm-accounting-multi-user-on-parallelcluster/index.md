@@ -1,10 +1,10 @@
 ---
-title: "Multi-Tenant Slurm on AWS ParallelCluster: Accounting and QoS Deep Dive"
+title: "Multi-Tenant Slurm on AWS ParallelCluster, Part 1: Accounting Database + Multi-User Setup"
 date: 2026-05-16
 draft: true
 author: ["Keita Watanabe"]
-description: "Stand up a Slurm accounting database, wire it into AWS ParallelCluster, onboard multiple users without LDAP, and use Slurm QoS to govern shared GPU capacity across teams."
-tags: ["slurm", "qos", "accounting", "parallelcluster", "aurora", "rds", "multi-tenant", "scheduling", "fairshare", "preemption", "aws"]
+description: "Stand up a Slurm accounting database on Aurora Serverless v2, wire it into AWS ParallelCluster, and onboard multiple users without LDAP. Part 1 of a two-post series; Part 2 adds QoS on top."
+tags: ["slurm", "accounting", "parallelcluster", "aurora", "rds", "multi-tenant", "aws", "multi-user"]
 ShowToc: true
 TocOpen: false
 ---
@@ -19,34 +19,47 @@ shuffled to the back because nothing prevents the latest submissions from
 front-running it. The scheduler is doing exactly what it was configured to do:
 nothing about it.
 
-[Slurm](https://slurm.schedmd.com/) ships the machinery to fix this — but it
-requires two pieces of infrastructure that, on AWS, you have to assemble
-yourself. First, a *job accounting database* — typically MySQL — that records
-every job, its resource usage, and the account it billed against. Second, a
-*Quality of Service (QoS)* layer that uses that account information to enforce
-per-team capacity reservations, per-user limits, and preemption rules. Without
-the database, QoS has no associations to gate against; without QoS, the
-database is a passive log of how badly your cluster got over-subscribed.
+Two pieces of infrastructure stand between you and that pain. First, every
+user needs their *own* Linux identity on the cluster — both on the head node
+where they submit work and on every compute node where their jobs actually
+run — so that you can say "Alice's job" and have the scheduler agree. Second,
+[Slurm](https://slurm.schedmd.com/) needs a *job accounting database* —
+typically MySQL — that records every job, its resource usage, and the account
+it billed against. Without per-user identity, every job is `root` and audit
+is impossible; without the accounting database, you can't build the per-team
+capacity reservations, per-user limits, and preemption rules that the
+*Quality of Service (QoS)* layer needs to actually enforce policy.
 
-This post is a deep dive on both, for **AWS ParallelCluster** administrators
-operating multi-tenant GPU clusters. We'll provision the accounting database
-using the CloudFormation template at
-[`1.architectures/8.accounting-database/`](https://github.com/awslabs/awsome-distributed-ai/tree/main/1.architectures/8.accounting-database)
-in the [awslabs/awsome-distributed-ai](https://github.com/awslabs/awsome-distributed-ai)
-repo, wire it into ParallelCluster, onboard a handful of users with a
-lightweight (no-LDAP) approach, and then drive a complete QoS configuration
-realizing a concrete multi-tenant policy:
+This post is the first of a two-part series for **AWS ParallelCluster**
+administrators operating multi-tenant GPU clusters. We'll cover the
+foundation here:
 
-> *"A research team gets a 50% capacity reservation. Interactive jobs are
-> capped at 1 hour and 4 GPUs per user. Low-priority batch jobs are
-> preemptible by both."*
+1. Provisioning the accounting database using the CloudFormation template at
+   [`1.architectures/8.accounting-database/`](https://github.com/awslabs/awsome-distributed-ai/tree/main/1.architectures/8.accounting-database)
+   in the [awslabs/awsome-distributed-ai](https://github.com/awslabs/awsome-distributed-ai)
+   repo.
+2. Wiring that database into ParallelCluster via `SlurmSettings.Database`.
+3. Onboarding a handful of users (alice, bob, charlie) with a **lightweight,
+   no-LDAP approach**: `useradd` on the head node, plus a post-install script
+   that propagates matching UIDs to every compute node via a shared FSx-OpenZFS
+   file.
+4. Verifying that `slurmdbd` is recording every job with the right user,
+   account, and GPU TRES.
 
-By the end you'll have a cluster where `sacctmgr`, `sshare`, and `sprio` all
-have something to say, and you'll understand what each of them is saying.
+[**Part 2**](../slurm-qos-on-parallelcluster/) takes the cluster we build
+here and adds QoS on top — associations, limits (`GrpTRES`, `MaxWall`),
+multifactor priority and fairshare, preemption, partition QoS — realizing
+a concrete shared-GPU policy: *"A research team gets a 50% capacity
+reservation. Interactive jobs are capped at 1 hour and 4 GPUs per user.
+Low-priority batch jobs are preemptible by both."*
+
+By the end of this post you'll have a working ParallelCluster with three
+users, an Aurora-backed accounting database, and every job ending up in
+`sacct` with correct attribution. Part 2 picks up exactly there.
 
 > **Audience**: cluster administrators. We assume comfort with `sbatch`,
 > `squeue`, basic VPC and IAM, and CloudFormation. We do *not* assume any
-> prior Slurm-accounting or QoS experience.
+> prior Slurm-accounting experience.
 
 ## Why an external accounting database?
 
@@ -92,7 +105,7 @@ flowchart LR
             GPU["Compute fleet<br/>2× g6.48xlarge<br/>(EFA, 8× L4 each)"]
             DB[("Aurora Serverless v2<br/>MySQL 8.0<br/>TLS required")]
             FSXL["FSx Lustre /fsx<br/>1.2 TB, P2 125 MB/s/TiB"]
-            FSXZ["FSx OpenZFS /home<br/>64 GB, HA-1 64 MB/s"]
+            FSXZ["FSx OpenZFS /home<br/>256 GB, HA-2 160 MB/s"]
         end
     end
     SM["Secrets Manager<br/>(DB password)"]
@@ -764,385 +777,6 @@ Note three things:
    so far. After the QoS scenario below, those numbers shift toward
    `Allocate`.)
 
-## QoS deep dive
-
-QoS is the part of Slurm that turns a passive accounting record into a
-policy enforcer. There are five primitives, in roughly the order you build
-them up:
-
-1. **Associations** — the *(cluster, account, user, partition)* tuples that
-   bind a submitting user to a billing identity
-2. **QoS limits** — knobs like `MaxWall`, `GrpTRES`, `MaxJobsPerUser` that
-   cap what a job (or a user, or an account) can ask for
-3. **Multifactor priority** — the formula that combines age, fairshare,
-   QoS priority, and TRES-weights into a number used to order pending jobs
-4. **Preemption** — declarative rules saying "QoS A can preempt QoS B"
-5. **Partition QoS** — a QoS attached to a *partition* rather than a user
-
-Each of these is independently useful; combining all five is how you get
-the canonical "research team owns 50% of the cluster, interactive jobs
-capped at 1 hour, low-priority batch is preemptible" setup we're building.
-
-```mermaid
-flowchart TD
-    A["Job submitted<br/>sbatch --qos=X --gres=gpu:N --time=..."] --> B{Association lookup}
-    B -- "user/account not found" --> X1["Reject: Invalid account"]
-    B -- "association exists" --> C{QoS limits gate}
-    C -- "GrpTRES exceeded" --> X2["Pending: AssocGrpGRES"]
-    C -- "MaxJobsPerUser exceeded" --> X3["Pending: QOSMaxJobsPerUserLimit"]
-    C -- "time > MaxWall" --> X4["Reject: Time limit exceeds QOS"]
-    C -- "all passes" --> D["Compute priority<br/>(multifactor)"]
-    D --> E["P = w_age * Age<br/>+ w_fs * Fairshare<br/>+ w_qos * QoSPriority<br/>+ w_tres * TRESFactor"]
-    E --> F{Partition QoS gate}
-    F -- "partition limit fails" --> X5["Pending: partition limit"]
-    F -- "all clear" --> G{Scheduler}
-    G -- "resources free" --> H["Running"]
-    G -- "blocked by lower-prio job" --> I{Preempt rule matches?}
-    I -- "yes" --> J["Lower-prio job REQUEUE'd"]
-    J --> H
-    I -- "no" --> K["Pending: waiting in queue"]
-```
-
-This is the decision tree every job traverses on submission and on every
-scheduler tick afterwards. The rest of this section walks each gate in
-order, with the commands to configure it.
-
-### Associations
-
-Slurm requires every job to bill against an *association*. By default — as
-we saw with Alice's smoke-test job — that association is the
-`(slurm-qos-demo, root, alice, *)` tuple created on the fly. That's fine
-for accounting but useless for QoS: limits live on accounts, not on the
-`root` catch-all.
-
-Build a two-account tree — `research` and `batch` — and bind our three
-users:
-
-```bash
-sudo sacctmgr -i add account research Description="Research team" Organization=acme
-sudo sacctmgr -i add account batch    Description="Batch jobs"    Organization=acme
-
-sudo sacctmgr -i add user alice   DefaultAccount=research
-sudo sacctmgr -i add user bob     DefaultAccount=research
-sudo sacctmgr -i add user charlie DefaultAccount=batch
-```
-
-`DefaultAccount` is what gets stamped on a job when the user doesn't pass
-`--account=…`. You can list the associations to confirm:
-
-```bash
-$ sacctmgr show associations format=Cluster,Account,User,Partition,Share -P
-Cluster|Account|User|Partition|Share
-slurm-qos-demo|root|||1
-slurm-qos-demo|root|root||1
-slurm-qos-demo|batch|||100
-slurm-qos-demo|batch|charlie||1
-slurm-qos-demo|pcdefault|||1
-slurm-qos-demo|pcdefault|slurm||1
-slurm-qos-demo|pcdefault|ubuntu||1
-slurm-qos-demo|research|||500
-slurm-qos-demo|research|alice||1
-slurm-qos-demo|research|bob||1
-```
-
-(`pcdefault` is ParallelCluster's own service account; ignore it.
-`Share=500` on `research` and `Share=100` on `batch` reflect the fairshare
-values we'll set in the next-to-next section.)
-
-### QoS limits
-
-Now the actual QoS objects. We need three:
-
-| QoS | Purpose | Limits |
-|---|---|---|
-| `research` | High-priority team jobs | `MaxWall=72h`, can preempt `batch-lowprio` |
-| `interactive` | Debugging / notebooks | `MaxWall=1h`, `GrpTRES=gres/gpu=4`, `MaxJobsPU=2` |
-| `batch-lowprio` | Best-effort overnight | `MaxWall=24h`, `MaxJobsPU=10`, preemptible |
-
-```bash
-sudo sacctmgr -i add qos research      Priority=10000 Flags=DenyOnLimit
-sudo sacctmgr -i add qos interactive   Priority=5000  Flags=DenyOnLimit
-sudo sacctmgr -i add qos batch-lowprio Priority=100   Flags=DenyOnLimit
-
-sudo sacctmgr -i modify qos interactive    set \
-    MaxWall=01:00:00 GrpTRES=gres/gpu=4 MaxJobsPerUser=2
-sudo sacctmgr -i modify qos batch-lowprio  set \
-    MaxWall=24:00:00 MaxJobsPerUser=10
-sudo sacctmgr -i modify qos research       set MaxWall=72:00:00
-
-# Allow each account to use the QoSes their users are entitled to
-sudo sacctmgr -i modify account research set qos+=research,interactive
-sudo sacctmgr -i modify account batch    set qos+=batch-lowprio,interactive
-```
-
-The limit knobs are the single most confusing part of QoS configuration.
-Here's a cheat sheet:
-
-| Knob | Scope of the cap | Trigger when exceeded |
-|---|---|---|
-| `MaxTRESPerJob` | A *single job*'s asks | Reject at submission |
-| `MaxTRESPerUser` | All *running* jobs of one user | New jobs pend with `QOSMaxTRESPerUser` |
-| `GrpTRES` | All *running* jobs in this QoS, *across all users* | New jobs pend with `AssocGrpGRES` (despite the name, this triggers on the QoS's group limit too) |
-| `MaxJobsPerUser` | Concurrent running jobs per user | New jobs pend with `QOSMaxJobsPerUser` |
-| `MaxSubmitJobsPerUser` | Submitted-but-not-completed jobs per user | New jobs *rejected* at submission |
-| `MaxWall` | Wall time *requested* (the `--time=`) | Reject at submission if `--time` > MaxWall |
-
-`Flags=DenyOnLimit` makes Slurm reject submissions that would violate any
-of the above *at submission time*, rather than letting them queue forever.
-Use it everywhere — submissions that pend on QoS limits with no chance of
-clearing are a real-world tar pit.
-
-Inspect the resulting QoS configuration:
-
-```bash
-$ sacctmgr show qos format=Name,Priority,GrpTRES,MaxWall,MaxJobsPU,Preempt%30 -P
-Name|Priority|GrpTRES|MaxWall|MaxJobsPU|Preempt
-normal|0||||
-research|10000||3-00:00:00||
-interactive|5000|gres/gpu=4|01:00:00|2|
-batch-lowprio|100||1-00:00:00|10|
-```
-
-(We haven't wired preemption yet — the `Preempt` column will populate
-after the next step.)
-
-### Multifactor priority and fairshare
-
-Two pending jobs from different users in the same QoS — who runs first?
-That's what the [multifactor priority plugin](https://slurm.schedmd.com/priority_multifactor.html)
-decides. The formula is:
-
-> *Priority = w<sub>age</sub>·Age + w<sub>fs</sub>·Fairshare + w<sub>qos</sub>·QoSPriority + w<sub>tres</sub>·TRESFactor*
-
-Where:
-
-- **Age** — how long the job has been pending in the queue (normalized 0-1)
-- **Fairshare** — how *under*-used this association is relative to its
-  share allocation (also 0-1; higher = more entitled to run next)
-- **QoSPriority** — the `Priority` field on the QoS object, normalized
-- **TRESFactor** — a weighted combination of the job's resource request,
-  used to bias toward (or against) GPU-heavy jobs
-
-The weights live in the cluster's `slurm.conf`; in our PC YAML we set:
-
-```yaml
-- PriorityWeightAge: 1000
-- PriorityWeightFairshare: 100000
-- PriorityWeightQOS: 10000
-- PriorityWeightTRES: CPU=1000,Mem=2000,GRES/gpu=4000
-- PriorityDecayHalfLife: 7-0
-```
-
-These values make fairshare dominate (100× the QoS weight), QoS dominate
-within an account, and TRES the tiebreaker between jobs. The
-`PriorityDecayHalfLife=7-0` (7 days) means past usage stops mattering
-for fairshare after about two weeks.
-
-The shares themselves live on the *association*, not the QoS. Give the
-research team 5× the batch team's share:
-
-```bash
-sudo sacctmgr -i modify account research set FairShare=500
-sudo sacctmgr -i modify account batch    set FairShare=100
-```
-
-Then inspect:
-
-```bash
-$ sshare -alP
-Account|User|RawShares|NormShares|RawUsage|NormUsage|EffectvUsage|FairShare|LevelFS|...
-root|||0.000000|0||1.000000||
- root|root|1|0.001661|0|0.000000|0.000000|1.000000|inf
- batch||100|0.166113|0|0.000000|0.000000||inf
-  batch|charlie|1|1.000000|0|0.000000|0.000000|0.000000|inf
- research||500|0.830565|0|0.000000|0.000000||inf
-  research|alice|1|0.500000|0|0.000000|0.000000|0.000000|inf
-  research|bob|1|0.500000|0|0.000000|0.000000|0.000000|inf
-```
-
-`NormShares` is the share-of-cluster you get: `research` has 0.83 (= 500
-÷ (500 + 100 + small root pool)), `batch` has 0.17. After they actually
-run jobs, `NormUsage` accumulates and `LevelFS` (= NormShares ÷
-NormUsage) becomes the fairshare priority factor, decaying with the
-half-life we set. While idle, `LevelFS` is `inf` (no usage to weigh
-against), and after `bob` consumed some cycles in our test the value
-drops:
-
-```bash
-# Post-scenario sshare (after research/alice consumed cluster time):
- research||500|0.830565|47|1.000000|1.000000||0.830565
-  research|alice|1|0.500000|0|0.000000|0.000000|0.333333|inf
-  research|bob|1|0.500000|47|1.000000|1.000000|0.166667|0.500000
-```
-
-(Bob's `LevelFS` dropped to 0.5 — he ate his share, so his next job will
-have lower fairshare priority than alice's until `PriorityDecayHalfLife`
-decays the usage.)
-
-When you're trying to explain "why is my job pended?" the right tool is
-`sprio -l`, which breaks the priority back down into its components so
-you can see exactly which gate is pinning a job's position.
-
-### Preemption
-
-Now we can let `research` and `interactive` *push out* `batch-lowprio`
-jobs when the cluster is full. Two pieces:
-
-1. **Cluster-level**: turned on in our PC YAML via
-   `PreemptType: preempt/qos` and `PreemptMode: REQUEUE` (preempted jobs
-   re-queue rather than die)
-2. **Per-QoS**: each preempting QoS declares which lower QoS it can boot
-
-```bash
-sudo sacctmgr -i modify qos research    set preempt=batch-lowprio
-sudo sacctmgr -i modify qos interactive set preempt=batch-lowprio
-```
-
-With this in place, the scheduler logic becomes:
-
-1. Job `J` in QoS `research` arrives, requesting 8 GPUs
-2. All 16 GPUs are busy running `batch-lowprio` jobs
-3. Slurm picks lower-priority `batch-lowprio` jobs to evict until 8 GPUs
-   are free
-4. Evicted jobs are requeued (kept in `slurmdbd`, re-runnable from the start)
-5. `J` runs
-
-`PreemptMode` has variants — `CANCEL` kills the lower job outright (use
-when restarts are cheap), `SUSPEND` pauses (rarely useful with GPU
-workloads because the GPUs stay allocated), `REQUEUE` is the safe default
-for everything else.
-
-### Partition QoS
-
-Everything we've done so far attaches QoS to *accounts*. There's a second
-hook point — attaching a QoS to a *partition* — which gates anyone using
-that partition, regardless of their account or user QoS. The typical use:
-
-```bash
-# Create a debug QoS with hard 30-min cap
-sudo sacctmgr -i add qos debug-partition Priority=15000 MaxWall=00:30:00 Flags=DenyOnLimit,PartitionMaxNodes
-sudo sacctmgr -i modify partition gpu set QOS=debug-partition
-```
-
-Reading: *any* job submitted to the `gpu` partition is gated by
-`debug-partition`'s limits *in addition to* its own QoS. We're not
-configuring this in our scenario (one partition, one set of users), but
-it's the lever you'd reach for if you wanted, e.g., a separate `debug`
-partition with a hard 30-minute cap regardless of which team submitted.
-
-### Job arrays
-
-Job arrays interact with QoS in two non-obvious ways:
-
-- **`MaxSubmitJobsPerUser`** counts every array task — a `sbatch
-  --array=0-99` against a QoS with `MaxSubmitJobsPerUser=10` is rejected.
-- **`MaxJobsPerUser`** counts only the *running* tasks. The same array
-  works fine, but only `MaxJobsPerUser` tasks run concurrently.
-
-For the QoS in our scenario, we deliberately set
-`MaxSubmitJobsPerUser` lax (no limit) and `MaxJobsPerUser` tight, so
-researchers can submit a 100-element sweep and the cluster trickles them
-through under fairshare and preemption pressure.
-
-## Putting it together — the shared-GPU scenario
-
-The fully assembled policy:
-
-| Account | Users | Default QoS | Allowed QoSes | Fairshare |
-|---|---|---|---|---|
-| `research` | alice, bob | (none — explicit) | `research`, `interactive` | 500 (~83%) |
-| `batch` | charlie | (none — explicit) | `batch-lowprio`, `interactive` | 100 (~17%) |
-
-| QoS | Priority | Limits | Preempts |
-|---|---|---|---|
-| `research` | 10000 | `MaxWall=72h` | `batch-lowprio` |
-| `interactive` | 5000 | `MaxWall=1h`, `GrpTRES=gres/gpu=4`, `MaxJobsPU=2` | `batch-lowprio` |
-| `batch-lowprio` | 100 | `MaxWall=24h`, `MaxJobsPU=10` | — (preemptible) |
-
-Watch the policy in action with three concurrent submissions:
-
-```bash
-# 1. Charlie's batch hogs both nodes
-sudo -u charlie sbatch --partition=gpu --qos=batch-lowprio --gres=gpu:8 \
-                       --nodes=2 --time=04:00:00 --wrap='sleep 14400'
-```
-
-```bash
-$ squeue -o "%.10i %.8u %.10a %.14q %.10j %.8T %.5D %.20R"
-     JOBID     USER    ACCOUNT            QOS       NAME    STATE NODES     NODELIST(REASON)
-         2  charlie      batch  batch-lowprio batch-char  RUNNING     2 gpu-st-g6-48xl-[1-2]
-```
-
-```bash
-# 2. Alice (research) submits — claims the same 16 GPUs
-sudo -u alice sbatch --partition=gpu --qos=research --gres=gpu:8 \
-                     --nodes=2 --time=02:00:00 --wrap='sleep 7200'
-```
-
-Almost immediately, charlie's job goes `PENDING (BeginTime)` (it was
-requeued) and alice's takes over:
-
-```bash
-$ squeue -o "%.10i %.8u %.10a %.14q %.10j %.8T %.5D %.20R"
-     JOBID     USER    ACCOUNT            QOS       NAME    STATE NODES     NODELIST(REASON)
-         2  charlie      batch  batch-lowprio batch-char  PENDING     2          (BeginTime)
-         3    alice   research       research research-a  RUNNING     2 gpu-st-g6-48xl-[1-2]
-```
-
-In `sacct`, the preempted job lands with state `PREEMPTED` (and gets
-re-queued under the same JobID if you check later):
-
-```bash
-$ sacct -a -X --starttime now-1hours --format=JobID,User,Account,QOS%14,AllocTRES%30,State
-JobID             User    Account            QOS                      AllocTRES      State
------------- --------- ---------- -------------- ------------------------------ ----------
-2              charlie      batch  batch-lowprio billing=2,cpu=2,gres/gpu=16,n+  PREEMPTED
-3                alice   research       research billing=2,cpu=2,gres/gpu=16,n+    RUNNING
-```
-
-And when Bob — also research — tries to grab 5 GPUs for an *interactive*
-session, the `interactive` QoS's `GrpTRES=gres/gpu=4` cap rejects the
-launch:
-
-```bash
-$ sudo -u bob sbatch --partition=gpu --qos=interactive --gres=gpu:5 \
-                     --nodes=1 --time=00:10:00 --wrap='sleep 60'
-Submitted batch job 9
-
-$ sacct -j 9 --format=JobID,User,QOS%14,AllocTRES%30,State,ExitCode,Reason
-JobID             User            QOS                      AllocTRES      State ExitCode  Reason
------------- --------- -------------- ------------------------------ ---------- -------- -------
-9                  bob    interactive billing=1,cpu=1,gres/gpu=5,no+     FAILED     0:53    None
-9.batch                                cpu=1,gres/gpu=5,mem=0,node=1  CANCELLED     0:53
-```
-
-Note the subtle behavior: `sbatch` *accepted* the submission (returned a
-job ID), but the job was immediately marked `FAILED` with **ExitCode
-`0:53`** — Slurm's "job exceeded a QoS or association limit"
-termination. The job never ran a single command; it was killed before
-the prolog. This is `Flags=DenyOnLimit` in action: the request would
-exceed `GrpTRES=gres/gpu=4`, so it gets aborted at allocation time
-rather than queuing forever.
-
-The same Bob with `--gres=gpu:4` (within the cap) succeeds:
-
-```bash
-$ sudo -u bob sbatch --partition=gpu --qos=interactive --gres=gpu:4 \
-                     --nodes=1 --time=00:10:00 --wrap='sleep 60'
-Submitted batch job 10
-
-$ squeue -o "%.10i %.8u %.14q %.8T %.30R"
-     JOBID     USER            QOS    STATE               NODELIST(REASON)
-        10      bob    interactive  RUNNING               gpu-st-g6-48xl-1
-```
-
-(Caveat we hit during testing: `salloc --gres=gpu:5` does *not* always
-honor `GrpTRES` the same way `sbatch` does — `salloc` granted the
-allocation past the cap. If you need a hard cap that applies to both
-batch and interactive paths, set `MaxTRESPerJob=gres/gpu=4` *in addition
-to* `GrpTRES` — that constrains the per-job request directly, which
-both `sbatch` and `salloc` honor at submission.)
-
 ## Operational guidance
 
 The walkthrough above is the happy path. Here are the gotchas that bite
@@ -1169,27 +803,61 @@ that were filed and have fixes in flight:
 | [#1096](https://github.com/awslabs/awsome-distributed-ai/issues/1096) | [#1101](https://github.com/awslabs/awsome-distributed-ai/pull/1101) | Accounting-DB template pinned the retired Aurora MySQL `8.0.mysql_aurora.3.07.1`. The PR exposes `EngineVersion` as a parameter (default `8.0.mysql_aurora.3.12.0`, the current latest Serverless-v2-compatible version) so future Aurora rotations don't break the template. |
 | [#1097](https://github.com/awslabs/awsome-distributed-ai/issues/1097) | [#1100](https://github.com/awslabs/awsome-distributed-ai/pull/1100) | Prereqs template hard-coded `SINGLE_AZ_HA_1` for FSx OpenZFS, which isn't offered in many major regions (us-east-1, us-east-2, us-west-2, eu-central-1, eu-west-1, ap-northeast-1, …). Flips the default to `SINGLE_AZ_HA_2`. |
 
-## Wrap-up
+## Wrap-up — and what's next
 
-We've turned a stock ParallelCluster deployment into a multi-tenant GPU
-cluster with three classes of jobs, real per-account limits, working
-fairshare, and preemption — all on top of an Aurora-backed accounting
-database that gives us a permanent audit log of GPU consumption.
+We've taken a stock ParallelCluster deployment and added two things every
+multi-tenant cluster needs: an **Aurora-backed Slurm accounting database**
+where every job lands in `slurmdbd` with full attribution, and a
+**lightweight multi-user identity layer** where `alice`, `bob`, and
+`charlie` share consistent UIDs across the head node and every compute
+node — no LDAP, no IDP, just a CSV file on FSx OpenZFS and a small
+post-install script.
 
-The pieces:
+The building blocks:
 
 - The [`1.architectures/8.accounting-database/`](https://github.com/awslabs/awsome-distributed-ai/tree/main/1.architectures/8.accounting-database)
   CloudFormation template gives you the Aurora cluster + secret + SGs
   needed for `slurmdbd`.
 - The
   [`1.architectures/2.aws-parallelcluster/infra-templates/parallelcluster-prerequisites.yaml`](https://github.com/awslabs/awsome-distributed-ai/blob/main/1.architectures/2.aws-parallelcluster/infra-templates/parallelcluster-prerequisites.yaml)
-  prereqs template handles VPC + FSx, with the HA_2 patch we describe.
+  prereqs template handles VPC + FSx (with the HA_2 patch we describe).
 - ParallelCluster ≥3.3's
   [`SlurmSettings.Database`](https://docs.aws.amazon.com/parallelcluster/latest/ug/cluster-yaml-Database-section-v3.html)
-  field wires `slurmdbd` in automatically.
-- Slurm's [QoS docs](https://slurm.schedmd.com/qos.html) and
-  [multifactor priority plugin docs](https://slurm.schedmd.com/priority_multifactor.html)
-  are the canonical references for the knobs we drove above.
+  field wires `slurmdbd` in automatically (and plumbs the RDS CA so TLS
+  "just works").
+- A two-step user pattern — `useradd` on the head node, plus a shared
+  `userlistfile` on FSx OpenZFS that a post-install script reads on every
+  compute node — gives consistent UIDs without an external identity store.
+
+Right now every job correctly attributes to a user, but nothing actually
+*enforces* fair sharing. Alice can still grab all 16 GPUs for 72 hours and
+starve everyone else. The `normal` QoS that every job billed against in
+the smoke test is a placeholder — no priority differentiation, no per-team
+caps, no preemption.
+
+### Up next — Part 2
+
+[**Part 2 — Slurm QoS Deep Dive**](../slurm-qos-on-parallelcluster/) takes
+the cluster you've built here and adds the policy layer:
+
+- **Associations** — bind users to billing accounts so QoS limits have a
+  target to gate against.
+- **QoS limits** — `MaxWall`, `GrpTRES`, `MaxJobsPerUser` and how each
+  knob actually rejects (or pends) a job.
+- **Multifactor priority and fairshare** — the formula behind every
+  pending-job ordering, and how `sshare`/`sprio` let you debug it.
+- **Preemption** — declarative "QoS A can preempt QoS B" rules, demonstrated
+  with a `research` job requeuing a `batch-lowprio` one.
+- **Partition QoS, job arrays, and the assembled multi-tenant scenario.**
+
+By the end you'll have realized the policy:
+
+> *"A research team gets a 50% capacity reservation. Interactive jobs are
+> capped at 1 hour and 4 GPUs per user. Low-priority batch jobs are
+> preemptible by both."*
+
+— with `sacctmgr`, `sshare`, `sprio`, `squeue`, and `sacct` all telling
+the same story, on the cluster you just provisioned.
 
 ### Further reading
 
@@ -1197,7 +865,7 @@ The pieces:
   upstream reference
 - [Managing AWS ParallelCluster SSH Users with OpenLDAP](https://aws.amazon.com/blogs/opensource/managing-aws-parallelcluster-ssh-users-with-openldap/)
   — the production-grade alternative to the lightweight method shown above
-- [SchedMD QoS limit tutorial](https://slurm.schedmd.com/resource_limits.html)
-  — exhaustive reference for the limit knobs
-- [Anatomy of an `sprio` output](https://slurm.schedmd.com/sprio.html) —
-  what the columns actually mean
+- [ParallelCluster `SlurmSettings.Database`](https://docs.aws.amazon.com/parallelcluster/latest/ug/cluster-yaml-Database-section-v3.html)
+  — the canonical reference for the wiring done in Step 5
+- [Aurora Serverless v2 docs](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-serverless-v2.html)
+  — sizing and operational guidance for the DB
