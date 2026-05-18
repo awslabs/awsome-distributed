@@ -152,7 +152,7 @@ echo "  Current node role: $CURRENT_ROLE"
 
 # Detect OpenZFS
 USE_OPENZFS=false
-if df -h 2>/dev/null | grep -q "/home"; then
+if mountpoint -q /home 2>/dev/null; then
     USE_OPENZFS=true
     echo "  OpenZFS:          detected at /home"
 else
@@ -283,17 +283,22 @@ if [[ ${#USERS_DATA[@]} -gt 0 ]]; then
 
         if [[ "$USE_OPENZFS" == true ]]; then
             home_dir="/home/$user"
-            if useradd "$user" -m -d "$home_dir" $uid_flag --shell /bin/bash; then
-                mkdir -p "$fsx_dir"; chown "$user":"$user" "$fsx_dir"
-            fi
+            useradd "$user" -m -d "$home_dir" $uid_flag --shell /bin/bash 2>/dev/null
         else
             home_dir="$fsx_dir"
-            useradd "$user" -m -d "$home_dir" $uid_flag --shell /bin/bash
+            useradd "$user" -m -d "$home_dir" $uid_flag --shell /bin/bash 2>/dev/null
+        fi
+
+        # Verify user was actually created before proceeding
+        if ! id -u "$user" &>/dev/null; then
+            echo "  ✗ Failed to create user '$user' — skipping"
+            continue
         fi
 
         uid=$(id -u "$user")
+        [[ "$USE_OPENZFS" == true ]] && { mkdir -p "$fsx_dir"; chown "$user":"$user" "$fsx_dir"; }
         CREATED_USERS_DATA+=("${user},${uid},${fsx_dir}")
-        echo "  User '$user' created with UID $uid (home: $home_dir)"
+        echo "  ✓ User '$user' created with UID $uid (home: $home_dir)"
 
         getent group docker &>/dev/null && usermod -aG docker "$user" && echo "    Added to docker group"
         [[ "$MAKE_SUDOER" == "y" ]] && { usermod -aG sudo "$user" 2>/dev/null || usermod -aG wheel "$user" 2>/dev/null || true; echo "    Added to sudoer group"; }
@@ -308,17 +313,22 @@ else
 
         if [[ "$USE_OPENZFS" == true ]]; then
             home_dir="/home/$user"
-            if useradd "$user" -m -d "$home_dir" $uid_flag --shell /bin/bash; then
-                mkdir -p "$fsx_dir"; chown "$user":"$user" "$fsx_dir"
-            fi
+            useradd "$user" -m -d "$home_dir" $uid_flag --shell /bin/bash 2>/dev/null
         else
             home_dir="$fsx_dir"
-            useradd "$user" -m -d "$home_dir" $uid_flag --shell /bin/bash
+            useradd "$user" -m -d "$home_dir" $uid_flag --shell /bin/bash 2>/dev/null
+        fi
+
+        # Verify user was actually created before proceeding
+        if ! id -u "$user" &>/dev/null; then
+            echo "  ✗ Failed to create user '$user' — skipping"
+            continue
         fi
 
         uid=$(id -u "$user")
+        [[ "$USE_OPENZFS" == true ]] && { mkdir -p "$fsx_dir"; chown "$user":"$user" "$fsx_dir"; }
         CREATED_USERS_DATA+=("${user},${uid},${fsx_dir}")
-        echo "  User '$user' created with UID $uid (home: $home_dir)"
+        echo "  ✓ User '$user' created with UID $uid (home: $home_dir)"
 
         getent group docker &>/dev/null && usermod -aG docker "$user" && echo "    Added to docker group"
         [[ "$MAKE_SUDOER" == "y" ]] && { usermod -aG sudo "$user" 2>/dev/null || usermod -aG wheel "$user" 2>/dev/null || true; echo "    Added to sudoer group"; }
@@ -339,12 +349,24 @@ echo " Step 3: Setup SSH keypairs"
 echo "========================================"
 for entry in "${CREATED_USERS_DATA[@]}"; do
     IFS=',' read -r user uid fsx_dir <<< "$entry"
-    sudo -u "$user" ssh-keygen -t rsa -q -f "/fsx/$user/.ssh/id_rsa" -N "" 2>/dev/null || true
-    sudo -u "$user" cat "/fsx/$user/.ssh/id_rsa.pub" 2>/dev/null | sudo -u "$user" tee "/fsx/$user/.ssh/authorized_keys" > /dev/null 2>&1 || true
-    chmod 700 "/fsx/$user/.ssh" 2>/dev/null || true
-    chmod 600 "/fsx/$user/.ssh/authorized_keys" 2>/dev/null || true
-    chown "$user":"$user" "/fsx/$user/.ssh/authorized_keys" 2>/dev/null || true
-    echo "  SSH keypair created for $user"
+    ssh_dir="/fsx/$user/.ssh"
+
+    # Ensure .ssh directory exists
+    mkdir -p "$ssh_dir" 2>/dev/null || true
+    chown "$user":"$user" "$ssh_dir" 2>/dev/null || true
+    chmod 700 "$ssh_dir" 2>/dev/null || true
+
+    # Generate keypair
+    sudo -u "$user" ssh-keygen -t rsa -q -f "$ssh_dir/id_rsa" -N "" 2>/dev/null || true
+
+    if [[ -f "$ssh_dir/id_rsa.pub" ]]; then
+        sudo -u "$user" cp "$ssh_dir/id_rsa.pub" "$ssh_dir/authorized_keys" 2>/dev/null || true
+        chmod 600 "$ssh_dir/authorized_keys" 2>/dev/null || true
+        chown "$user":"$user" "$ssh_dir/authorized_keys" 2>/dev/null || true
+        echo "  ✓ SSH keypair created for $user"
+    else
+        echo "  ⚠ SSH keypair generation failed for $user (home dir may not exist on shared storage)"
+    fi
 done
 
 # ===================================================================
