@@ -1,10 +1,10 @@
-baseURL = "https://awslabs.github.io/awsome-distributed/"
+baseURL = "https://awslabs.github.io/awsome-distributed-ai/"
 languageCode = "en-us"
 title = "Awsome-Distributed-AI Deep Dives by the AWS Frameworks Team"
 theme = "PaperMod"
 
 [params]
-  description = "Posts about distributed ML training on AWS — companion to awslabs/awsome-distributed."
+  description = "Posts about distributed ML training on AWS — companion to awslabs/awsome-distributed-ai."
   ShowReadingTime = true
   ShowShareButtons = false
   ShowPostNavLinks = true
@@ -14,7 +14,7 @@ theme = "PaperMod"
   Content = """
 Posts on distributed training and inference — infrastructure, frameworks, and observability — from the AWS Frameworks Team.
 
-Companion to [`awslabs/awsome-distributed`](https://github.com/awslabs/awsome-distributed).
+Companion to [`awslabs/awsome-distributed-ai`](https://github.com/awslabs/awsome-distributed-ai).
 """
 
 [[menu.main]]
