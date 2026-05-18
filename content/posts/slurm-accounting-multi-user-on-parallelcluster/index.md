@@ -1,7 +1,7 @@
 ---
 title: "Multi-Tenant Slurm on AWS ParallelCluster, Part 1: Accounting Database + Multi-User Setup"
 date: 2026-05-16
-draft: true
+draft: false
 author: ["Keita Watanabe"]
 description: "Stand up a Slurm accounting database on Aurora Serverless v2, wire it into AWS ParallelCluster, and onboard multiple users without LDAP. Part 1 of a two-post series; Part 2 adds QoS on top."
 tags: ["slurm", "accounting", "parallelcluster", "aurora", "rds", "multi-tenant", "aws", "multi-user"]

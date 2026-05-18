@@ -1,7 +1,7 @@
 ---
 title: "Multi-Tenant Slurm on AWS ParallelCluster, Part 2: QoS Deep Dive"
 date: 2026-05-17
-draft: true
+draft: false
 author: ["Keita Watanabe"]
 description: "Use Slurm QoS — associations, limits, fairshare, preemption, partition QoS — to govern shared GPU capacity across teams on top of the multi-user ParallelCluster from Part 1."
 tags: ["slurm", "qos", "parallelcluster", "multi-tenant", "scheduling", "fairshare", "preemption", "aws"]
