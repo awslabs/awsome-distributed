@@ -1,0 +1,85 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# One-shot pod: convert the distributed LoRA checkpoint produced by training
+# to HuggingFace PEFT format (adapter_config.json + adapter_model.safetensors).
+#
+# Output at /fsx/qwen36-xlam-runs/adapter_hf is directly loadable by
+# `peft.PeftModel.from_pretrained(...)` and by vLLM via --lora-modules.
+#
+# Required env vars: NAMESPACE, IMAGE, NODE_INSTANCE_TYPE, GPU_PER_NODE,
+#                    EFA_PER_NODE, CONFIG_MAP, HF_MODEL_ID, ITER, TP, PP, EP
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qwen-export-adapter
+  namespace: ${NAMESPACE}
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    node.kubernetes.io/instance-type: ${NODE_INSTANCE_TYPE}
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: export
+      image: ${IMAGE}
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          set -ex
+          CKPT=$(ls -d /fsx/qwen36-xlam-runs/checkpoints/iter_${ITER} 2>/dev/null \
+                 || ls -d /fsx/qwen36-xlam-runs/checkpoints/iter_* | sort | tail -1)
+          echo "LoRA checkpoint: $CKPT"
+          mkdir -p /fsx/qwen36-xlam-runs/adapter_hf
+
+          cd /opt/Megatron-Bridge
+          torchrun --nproc_per_node=${GPU_PER_NODE} /config/export_lora_adapter.py \
+            --lora-checkpoint  "$CKPT" \
+            --hf-model         ${HF_MODEL_ID} \
+            --output           /fsx/qwen36-xlam-runs/adapter_hf \
+            --base-checkpoint  /fsx/qwen36-bridge \
+            --tp ${TP} --pp ${PP} --ep ${EP} \
+            2>&1 | tee /fsx/qwen36-xlam-runs/export.log
+
+          echo "Adapter written:"
+          ls -la /fsx/qwen36-xlam-runs/adapter_hf
+      env:
+        - { name: HF_MODEL_ID,           value: "${HF_MODEL_ID}" }
+        - { name: ITER,                  value: "${ITER}" }
+        - { name: NCCL_DEBUG,            value: WARN }
+        - { name: NCCL_SOCKET_IFNAME,    value: "^lo" }
+        - { name: FI_PROVIDER,           value: efa }
+        - { name: FI_EFA_USE_DEVICE_RDMA, value: "1" }
+        - { name: HF_HOME,               value: /fsx/hf_cache }
+        - { name: TRANSFORMERS_CACHE,    value: /fsx/hf_cache }
+        - { name: PYTHONUNBUFFERED,      value: "1" }
+      resources:
+        limits:
+          nvidia.com/gpu: "${GPU_PER_NODE}"
+          vpc.amazonaws.com/efa: "${EFA_PER_NODE}"
+          cpu: "90"
+          memory: 1500Gi
+        requests:
+          nvidia.com/gpu: "${GPU_PER_NODE}"
+          vpc.amazonaws.com/efa: "${EFA_PER_NODE}"
+          cpu: "90"
+          memory: 1500Gi
+      volumeMounts:
+        - { name: lustre, mountPath: /fsx }
+        - { name: shm,    mountPath: /dev/shm }
+        - { name: config, mountPath: /config }
+      securityContext:
+        capabilities:
+          add: ["IPC_LOCK"]
+  volumes:
+    - name: lustre
+      persistentVolumeClaim:
+        claimName: qwen-moe-lustre
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 128Gi
+    - name: config
+      configMap:
+        name: ${CONFIG_MAP}

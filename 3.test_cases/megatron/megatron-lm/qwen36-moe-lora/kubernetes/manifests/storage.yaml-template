@@ -1,0 +1,43 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# FSx for Lustre 2.15 PVC for model weights, dataset, checkpoints, and adapter.
+#
+# Why explicit 2.15: The FSx CSI driver defaults to filesystem version 2.10,
+# which is incompatible with the Lustre 2.15.6 client bundled in the p5e AMI.
+# Mounting a 2.10 server with a 2.15 client fails with
+#   "Server MGS version (2.10.5.0) refused connection from this client
+#    with an incompatible version (2.15.6)"
+# surfaced only in kernel dmesg; the mount exits with a generic EINVAL.
+#
+# Required env vars:
+#   NAMESPACE           Kubernetes namespace (this file's target)
+#   FSX_SUBNET_ID       Subnet in the same AZ as your HyperPod GPU nodes
+#   FSX_SECURITY_GROUP  SG with Lustre ports (988 + 1021-1023 TCP) open to itself
+#   FSX_SIZE_GB         Filesystem size (minimum 1200)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fsx-sc-215-${NAMESPACE}
+parameters:
+  deploymentType: SCRATCH_2
+  fileSystemTypeVersion: "2.15"
+  securityGroupIds: ${FSX_SECURITY_GROUP}
+  storageType: SSD
+  subnetId: ${FSX_SUBNET_ID}
+provisioner: fsx.csi.aws.com
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qwen-moe-lustre
+  namespace: ${NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: fsx-sc-215-${NAMESPACE}
+  resources:
+    requests:
+      storage: ${FSX_SIZE_GB}Gi

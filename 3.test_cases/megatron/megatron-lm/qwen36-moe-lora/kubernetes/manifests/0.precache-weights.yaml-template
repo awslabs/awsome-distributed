@@ -1,0 +1,62 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# One-shot pod: pre-cache base model weights to FSx Lustre so the 70 GB download
+# happens once, not on every training pod start.
+#
+# Required env vars: NAMESPACE, IMAGE, HF_MODEL_ID, NODE_INSTANCE_TYPE
+# Optional:          HF_TOKEN_SECRET  (Secret name with `token` key, for gated models)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qwen-precache-weights
+  namespace: ${NAMESPACE}
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    node.kubernetes.io/instance-type: ${NODE_INSTANCE_TYPE}
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: precache
+      image: ${IMAGE}
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          set -ex
+          pip install --quiet "huggingface_hub>=0.24,<1.0"
+          mkdir -p /fsx/hf_cache
+          python - <<'PY'
+          import os
+          from huggingface_hub import snapshot_download
+          snapshot_download(
+              repo_id=os.environ["HF_MODEL_ID"],
+              local_dir=f"/fsx/hf_cache/models--{os.environ['HF_MODEL_ID'].replace('/','--')}",
+              max_workers=8,
+          )
+          PY
+          echo "Pre-cache complete:"
+          du -sh /fsx/hf_cache/*
+      env:
+        - name: HF_MODEL_ID
+          value: "${HF_MODEL_ID}"
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ${HF_TOKEN_SECRET}
+              key: token
+              optional: true
+      resources:
+        limits:
+          cpu: "8"
+          memory: 64Gi
+        requests:
+          cpu: "4"
+          memory: 32Gi
+      volumeMounts:
+        - { name: lustre, mountPath: /fsx }
+  volumes:
+    - name: lustre
+      persistentVolumeClaim:
+        claimName: qwen-moe-lustre

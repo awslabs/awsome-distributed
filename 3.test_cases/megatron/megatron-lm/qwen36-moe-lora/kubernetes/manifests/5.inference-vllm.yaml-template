@@ -1,0 +1,109 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# vLLM inference Deployment serving the base model with the fine-tuned adapter
+# hot-loaded under the alias "tools". Exposes an OpenAI-compatible
+# /v1/chat/completions API. Fronted by a ClusterIP Service for in-cluster
+# evaluation.
+#
+# The LoRA adapter can come from either:
+#   1. The local Lustre export at /fsx/qwen36-xlam-runs/adapter_hf, or
+#   2. A published HuggingFace repo (set LORA_SOURCE=hf, LORA_REPO=...)
+#
+# Required env vars: NAMESPACE, NODE_INSTANCE_TYPE, VLLM_IMAGE, HF_MODEL_ID,
+#                    LORA_SOURCE (=local|hf), LORA_REPO, TP
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen-inference
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qwen-inference
+  template:
+    metadata:
+      labels:
+        app: qwen-inference
+    spec:
+      nodeSelector:
+        node.kubernetes.io/instance-type: ${NODE_INSTANCE_TYPE}
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: vllm
+          image: ${VLLM_IMAGE}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -ex
+              if [ "${LORA_SOURCE}" = "local" ]; then
+                LORA_PATH=/fsx/qwen36-xlam-runs/adapter_hf
+                test -d "$LORA_PATH" || { echo "Adapter missing at $LORA_PATH"; exit 1; }
+              else
+                LORA_PATH=${LORA_REPO}
+              fi
+              echo "Serving adapter: $LORA_PATH"
+              exec vllm serve ${HF_MODEL_ID} \
+                --enable-lora \
+                --lora-modules tools=$LORA_PATH \
+                --max-loras 1 --max-lora-rank 64 \
+                --tensor-parallel-size ${TP} \
+                --gpu-memory-utilization 0.90 \
+                --max-model-len 4096 \
+                --enable-auto-tool-choice \
+                --tool-call-parser hermes \
+                --port 8000
+          env:
+            - { name: HF_MODEL_ID,                value: "${HF_MODEL_ID}" }
+            - { name: LORA_SOURCE,                value: "${LORA_SOURCE}" }
+            - { name: LORA_REPO,                  value: "${LORA_REPO}" }
+            - { name: HF_HOME,                    value: /fsx/hf_cache }
+            - { name: TRANSFORMERS_CACHE,         value: /fsx/hf_cache }
+            - { name: VLLM_WORKER_MULTIPROC_METHOD, value: spawn }
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: 8000
+            initialDelaySeconds: 300
+            periodSeconds: 15
+            failureThreshold: 40
+          resources:
+            limits:
+              nvidia.com/gpu: "${TP}"
+              cpu: "16"
+              memory: 128Gi
+            requests:
+              nvidia.com/gpu: "${TP}"
+              cpu: "16"
+              memory: 128Gi
+          volumeMounts:
+            - { name: lustre, mountPath: /fsx }
+            - { name: shm,    mountPath: /dev/shm }
+      volumes:
+        - name: lustre
+          persistentVolumeClaim:
+            claimName: qwen-moe-lustre
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen-inference
+  namespace: ${NAMESPACE}
+spec:
+  type: ClusterIP
+  selector:
+    app: qwen-inference
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP

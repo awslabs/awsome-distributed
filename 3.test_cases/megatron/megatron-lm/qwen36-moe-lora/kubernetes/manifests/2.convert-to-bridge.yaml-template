@@ -1,0 +1,87 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# One-shot pod: convert HuggingFace safetensors to Megatron-Bridge distributed
+# checkpoint format. Runs on a single GPU node via torchrun with the same
+# TP/PP/EP sharding the training job will use, so the output shard layout
+# matches exactly.
+#
+# This is a one-time cost per (model, parallelism-config) pair — subsequent
+# training runs reuse the output.
+#
+# Required env vars: NAMESPACE, IMAGE, NODE_INSTANCE_TYPE, GPU_PER_NODE,
+#                    EFA_PER_NODE, HF_MODEL_ID, TP, PP, EP
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qwen-convert-to-bridge
+  namespace: ${NAMESPACE}
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    node.kubernetes.io/instance-type: ${NODE_INSTANCE_TYPE}
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: convert
+      image: ${IMAGE}
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          set -ex
+          HF_LOCAL="/fsx/hf_cache/models--$(echo ${HF_MODEL_ID} | tr '/' '-' | sed 's/-/--/')"
+          test -d "${HF_LOCAL}" || HF_LOCAL="${HF_MODEL_ID}"
+          mkdir -p /fsx/qwen36-bridge
+
+          if [ -f /fsx/qwen36-bridge/.done ]; then
+            echo "Bridge checkpoint already present; skipping conversion."
+            exit 0
+          fi
+          rm -rf /fsx/qwen36-bridge/*
+
+          cd /opt/Megatron-Bridge
+          torchrun --nproc_per_node=${GPU_PER_NODE} \
+            examples/conversion/convert_checkpoints_multi_gpu.py import \
+              --hf-model "${HF_LOCAL}" \
+              --megatron-path /fsx/qwen36-bridge \
+              --tp ${TP} --pp ${PP} --ep ${EP} \
+              --torch-dtype bfloat16 \
+              2>&1 | tee /fsx/qwen36-bridge/convert.log
+
+          touch /fsx/qwen36-bridge/.done
+          echo "Conversion complete:"
+          du -sh /fsx/qwen36-bridge
+      env:
+        - { name: HF_MODEL_ID,           value: "${HF_MODEL_ID}" }
+        - { name: NCCL_DEBUG,            value: WARN }
+        - { name: NCCL_SOCKET_IFNAME,    value: "^lo" }
+        - { name: FI_PROVIDER,           value: efa }
+        - { name: FI_EFA_USE_DEVICE_RDMA, value: "1" }
+        - { name: FI_EFA_FORK_SAFE,      value: "1" }
+        - { name: PYTHONUNBUFFERED,      value: "1" }
+      resources:
+        limits:
+          nvidia.com/gpu: "${GPU_PER_NODE}"
+          vpc.amazonaws.com/efa: "${EFA_PER_NODE}"
+          cpu: "90"
+          memory: 1500Gi
+        requests:
+          nvidia.com/gpu: "${GPU_PER_NODE}"
+          vpc.amazonaws.com/efa: "${EFA_PER_NODE}"
+          cpu: "90"
+          memory: 1500Gi
+      volumeMounts:
+        - { name: lustre, mountPath: /fsx }
+        - { name: shm,    mountPath: /dev/shm }
+      securityContext:
+        capabilities:
+          add: ["IPC_LOCK"]
+  volumes:
+    - name: lustre
+      persistentVolumeClaim:
+        claimName: qwen-moe-lustre
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 128Gi

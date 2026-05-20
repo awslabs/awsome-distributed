@@ -1,0 +1,4 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+# Local environment file — users copy env.example to env.sh with real values.
+kubernetes/scripts/env.sh

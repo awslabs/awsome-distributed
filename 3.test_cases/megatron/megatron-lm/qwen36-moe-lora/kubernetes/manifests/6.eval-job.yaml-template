@@ -1,0 +1,71 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Evaluation Job: runs Gate 1 (10 hand-crafted prompts) and optionally Gate 2
+# (50 xLAM validation prompts judged by Claude Opus 4.7 via Bedrock). Writes a
+# summary to stdout; captured via `kubectl logs`.
+#
+# Gate 2 requires AWS credentials resolvable by boto3. On HyperPod EKS, the
+# preferred path is IRSA (annotate this Job's ServiceAccount with the IAM role
+# that has bedrock:InvokeModel on the Claude Opus 4.7 profile). On a laptop,
+# use AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars on this Job.
+#
+# Required env vars: NAMESPACE, IMAGE, NODE_INSTANCE_TYPE, CONFIG_MAP,
+#                    HF_MODEL_ID, GATE, N_SAMPLES, BEDROCK_REGION, JUDGE_MODEL
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen-eval
+  namespace: ${NAMESPACE}
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        node.kubernetes.io/instance-type: ${NODE_INSTANCE_TYPE}
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: eval
+          image: ${IMAGE}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -ex
+              pip install --quiet "boto3>=1.35,<2.0" "requests>=2.31,<3.0"
+              python /config/eval_function_calling.py \
+                --endpoint http://qwen-inference.${NAMESPACE}.svc.cluster.local:8000 \
+                --base-model ${HF_MODEL_ID} \
+                --lora-alias tools \
+                --gate ${GATE} \
+                --val-file /fsx/datasets/validation.jsonl \
+                --n ${N_SAMPLES} \
+                --bedrock-region ${BEDROCK_REGION} \
+                --judge-model ${JUDGE_MODEL}
+          env:
+            - { name: NAMESPACE,       value: "${NAMESPACE}" }
+            - { name: HF_MODEL_ID,     value: "${HF_MODEL_ID}" }
+            - { name: GATE,            value: "${GATE}" }
+            - { name: N_SAMPLES,       value: "${N_SAMPLES}" }
+            - { name: BEDROCK_REGION,  value: "${BEDROCK_REGION}" }
+            - { name: JUDGE_MODEL,     value: "${JUDGE_MODEL}" }
+            - { name: PYTHONUNBUFFERED, value: "1" }
+          resources:
+            limits:
+              cpu: "2"
+              memory: 8Gi
+            requests:
+              cpu: "1"
+              memory: 4Gi
+          volumeMounts:
+            - { name: lustre, mountPath: /fsx }
+            - { name: config, mountPath: /config }
+      volumes:
+        - name: lustre
+          persistentVolumeClaim:
+            claimName: qwen-moe-lustre
+        - name: config
+          configMap:
+            name: ${CONFIG_MAP}

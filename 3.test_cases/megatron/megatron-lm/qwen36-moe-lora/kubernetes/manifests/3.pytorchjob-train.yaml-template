@@ -1,0 +1,110 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# PyTorchJob for Qwen3.6-35B-A3B xLAM function-calling LoRA.
+#
+# Parallelism (set via env vars, matching the base checkpoint sharding from
+# 2.convert-to-bridge.yaml-template):
+#   TP=2, PP=1, EP=4, DP=NUM_NODES*GPU_PER_NODE/(TP*PP*EP)
+#
+# Required env vars: NAMESPACE, IMAGE, NODE_INSTANCE_TYPE, NUM_NODES,
+#                    GPU_PER_NODE, EFA_PER_NODE, CONFIG_MAP, HF_MODEL_ID, TP,
+#                    PP, EP, TRAIN_ITERS, GLOBAL_BS, MICRO_BS
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: qwen36-xlam-train
+  namespace: ${NAMESPACE}
+spec:
+  nprocPerNode: "${GPU_PER_NODE}"
+  elasticPolicy:
+    rdzvBackend: c10d
+    minReplicas: ${NUM_NODES}
+    maxReplicas: ${NUM_NODES}
+    maxRestarts: 0
+  pytorchReplicaSpecs:
+    Worker:
+      replicas: ${NUM_NODES}
+      restartPolicy: OnFailure
+      template:
+        spec:
+          hostIPC: true
+          nodeSelector:
+            node.kubernetes.io/instance-type: ${NODE_INSTANCE_TYPE}
+          tolerations:
+            - operator: Exists
+          containers:
+            - name: pytorch
+              image: ${IMAGE}
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "-lc"]
+              args:
+                - |
+                  set -ex
+                  python -c 'from megatron.core import __version__ as v; assert v >= "0.13", f"megatron-core >= 0.13 required, got {v}"'
+                  test -f /fsx/datasets/training.jsonl
+                  test -f /fsx/datasets/validation.jsonl
+                  test -f /fsx/qwen36-bridge/.done
+                  mkdir -p /fsx/qwen36-xlam-runs/checkpoints
+
+                  cd /opt/Megatron-Bridge
+                  torchrun \
+                    --nproc_per_node=${GPU_PER_NODE} \
+                    --nnodes=${PET_NNODES} \
+                    --node_rank=${PET_NODE_RANK} \
+                    --master_addr=${MASTER_ADDR} \
+                    --master_port=${MASTER_PORT} \
+                    /config/xlam_runner.py \
+                    2>&1 | tee -a /fsx/qwen36-xlam-runs/train.log
+              env:
+                # Training hyperparams (consumed by xlam_runner.py)
+                - { name: HF_MODEL_ID,          value: "${HF_MODEL_ID}" }
+                - { name: TOKENIZER_PATH,       value: "/fsx/hf_cache/models--Qwen--Qwen3.6-35B-A3B" }
+                - { name: DATASET_ROOT,         value: "/fsx/datasets" }
+                - { name: PRETRAINED_CHECKPOINT, value: "/fsx/qwen36-bridge" }
+                - { name: CHECKPOINT_SAVE_DIR,  value: "/fsx/qwen36-xlam-runs/checkpoints" }
+                - { name: TRAIN_ITERS,          value: "${TRAIN_ITERS}" }
+                - { name: GLOBAL_BS,            value: "${GLOBAL_BS}" }
+                - { name: MICRO_BS,             value: "${MICRO_BS}" }
+                # NCCL / EFA
+                - { name: NCCL_DEBUG,            value: WARN }
+                - { name: NCCL_SOCKET_IFNAME,    value: "^lo" }
+                - { name: FI_PROVIDER,           value: efa }
+                - { name: FI_EFA_USE_DEVICE_RDMA, value: "1" }
+                - { name: FI_EFA_FORK_SAFE,      value: "1" }
+                - { name: NCCL_BUFFSIZE,         value: "8388608" }
+                - { name: NCCL_NET_GDR_LEVEL,    value: PHB }
+                # HF cache on shared Lustre
+                - { name: HF_HOME,               value: /fsx/hf_cache }
+                - { name: TRANSFORMERS_CACHE,    value: /fsx/hf_cache }
+                - { name: PYTORCH_CUDA_ALLOC_CONF, value: "expandable_segments:True,max_split_size_mb:512" }
+                - { name: PYTHONUNBUFFERED,      value: "1" }
+              resources:
+                limits:
+                  nvidia.com/gpu: "${GPU_PER_NODE}"
+                  vpc.amazonaws.com/efa: "${EFA_PER_NODE}"
+                  cpu: "90"
+                  memory: 1500Gi
+                requests:
+                  nvidia.com/gpu: "${GPU_PER_NODE}"
+                  vpc.amazonaws.com/efa: "${EFA_PER_NODE}"
+                  cpu: "90"
+                  memory: 1500Gi
+              volumeMounts:
+                - { name: lustre, mountPath: /fsx }
+                - { name: shm,    mountPath: /dev/shm }
+                - { name: config, mountPath: /config }
+              securityContext:
+                capabilities:
+                  add: ["IPC_LOCK"]
+          volumes:
+            - name: lustre
+              persistentVolumeClaim:
+                claimName: qwen-moe-lustre
+            - name: shm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 128Gi
+            - name: config
+              configMap:
+                name: ${CONFIG_MAP}

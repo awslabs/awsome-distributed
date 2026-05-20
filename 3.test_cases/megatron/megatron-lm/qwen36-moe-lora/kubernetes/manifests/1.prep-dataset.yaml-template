@@ -1,0 +1,49 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# One-shot pod: convert the xLAM-60k parquet dataset to Megatron-Bridge JSONL.
+# Writes /fsx/datasets/training.jsonl + /fsx/datasets/validation.jsonl.
+#
+# Required env vars: NAMESPACE, IMAGE, NODE_INSTANCE_TYPE, CONFIG_MAP
+#   CONFIG_MAP must contain prep_xlam_dataset.py (created by 1.prep-dataset.sh).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qwen-prep-xlam
+  namespace: ${NAMESPACE}
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    node.kubernetes.io/instance-type: ${NODE_INSTANCE_TYPE}
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: prep
+      image: ${IMAGE}
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/bash", "-lc"]
+      args:
+        - |
+          set -ex
+          pip install --quiet "datasets>=2.14,<3.0"
+          mkdir -p /fsx/datasets
+          python /config/prep_xlam_dataset.py --output-dir /fsx/datasets
+          echo "Dataset prep complete:"
+          wc -l /fsx/datasets/training.jsonl /fsx/datasets/validation.jsonl
+      resources:
+        limits:
+          cpu: "8"
+          memory: 32Gi
+        requests:
+          cpu: "4"
+          memory: 16Gi
+      volumeMounts:
+        - { name: lustre, mountPath: /fsx }
+        - { name: config, mountPath: /config }
+  volumes:
+    - name: lustre
+      persistentVolumeClaim:
+        claimName: qwen-moe-lustre
+    - name: config
+      configMap:
+        name: ${CONFIG_MAP}
