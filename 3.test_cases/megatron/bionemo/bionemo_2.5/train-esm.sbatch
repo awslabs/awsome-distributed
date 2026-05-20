@@ -9,8 +9,10 @@
 export FI_PROVIDER=efa
 export NCCL_DEBUG=INFO
 
-#Path to store data and checkpoints
-export DATA_HOME_DIR=/fsxl/awsankur/bionemo
+# Path to store data and checkpoints. Override DATA_HOME_DIR to match your
+# shared filesystem mount.
+: "${DATA_HOME_DIR:=/fsxl/${USER}/bionemo}"
+export DATA_HOME_DIR
 
 ###########################
 ###### User Variables #####

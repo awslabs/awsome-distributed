@@ -14,13 +14,16 @@ set -ex;
 ###### User Variables #####
 ###########################
 
+# Override ESM2_DATA_DIR if your shared filesystem mount differs.
+: "${ESM2_DATA_DIR:=/fsxl/${USER}/esm2}"
+
 GPUS_PER_NODE=8 # 4 for G5.12x, 8 for P4/P5
 
-DATASET_DIR="/fsxl/awsankur/esm2/processed/arrow"
+DATASET_DIR="${ESM2_DATA_DIR}/processed/arrow"
 
-OUTPUT_DIR="/fsxl/awsankur/esm2/output"
+OUTPUT_DIR="${ESM2_DATA_DIR}/output"
 
-IMAGE="/fsxl/awsankur/esm2/esm.sqsh"
+IMAGE="${ESM2_DATA_DIR}/esm.sqsh"
 ###########################
 ## Environment Variables ##
 ###########################
