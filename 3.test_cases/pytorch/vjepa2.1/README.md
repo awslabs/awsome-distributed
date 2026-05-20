@@ -7,6 +7,15 @@ This test case demonstrates distributed pre-training of [V-JEPA 2.1](https://git
 
 We benchmark the **ViT-g/16 (1B parameters)** encoder variant across 8 nodes of p5en.48xlarge instances (64 x NVIDIA H200 GPUs), with 50/50 image/video co-training.
 
+> **Directory Structure Note**: V-JEPA 2 and V-JEPA 2.1 are maintained as
+> separate test case directories (`vjepa2/` and `vjepa2.1/`) to mirror the
+> upstream [facebookresearch/vjepa2](https://github.com/facebookresearch/vjepa2)
+> repository structure, where `app/vjepa/` and `app/vjepa_2_1/` are distinct
+> training applications with different model architectures, loss functions, and
+> data pipelines. They share the same codebase and container image, but their
+> configs, benchmarks, and launch patterns differ. Shared utility scripts are
+> symlinked from `vjepa2/scripts/` to avoid duplication.
+
 | | |
 |---|---|
 | **Model** | V-JEPA 2.1 ViT-g/16 (1B params) |
@@ -151,38 +160,6 @@ kubectl logs -f pytorchjob/vjepa2-1-benchmark-worker-0
 
 The standard container (based on `pytorch:25.03-py3`) ships NCCL 2.25 and an older aws-ofi-nccl plugin that are **incompatible with B200 EFA networking**. B200 scripts use a NeMo container with NCCL >= 2.29 instead. See the [V-JEPA 2 B200 setup](../vjepa2/README.md#7-b200-gpu-setup) for full prerequisite instructions.
 
-## 7. FSDP Experimental Config (B200)
-
-> **Benchmark finding**: FSDP was found to be **~2x slower** than baseline DDP in benchmarks
-> (iter ~8,200 ms vs ~4,075 ms on video ranks). The gradient sharding communication overhead
-> outweighs the memory savings. `torch.compile` with activation checkpointing enabled was
-> also tested and found to be ~55% slower due to graph breaks from checkpoint segments and
-> dynamic masking. **The baseline DDP config is the recommended configuration for V-JEPA 2.1.**
-
-An FSDP variant is provided for reference under `scripts/experimental/` that replaces DDP with `FullyShardedDataParallel` (SHARD_GRAD_OP / ZeRO-2) for the encoder and target encoder. This shards gradients and optimizer states across ranks, saving ~15 GB/GPU. Activation checkpointing must remain enabled because video ranks (16-frame clips, bs=24) exceed 178 GB HBM without it.
-
-```bash
-mkdir -p logs/vjepa21_fsdp
-sbatch slurm/experimental/benchmark_training_b200_fsdp.sbatch
-```
-
-| Setting | Baseline (DDP) | FSDP |
-|---------|---------------|------|
-| Parallelism | DDP (all components) | FSDP encoder+target, DDP predictor |
-| `compile_model` | false | true |
-| `use_activation_checkpointing` | true | true |
-| `num_workers` | 8 | 20 |
-
-The FSDP script (`scripts/experimental/run_train_fsdp.py`) is a self-contained training loop that:
-- Wraps encoder and target_encoder with `FSDP(sharding_strategy=SHARD_GRAD_OP, use_orig_params=True)`
-- Keeps predictor with DDP (`find_unused_parameters=True`) since it is small (~55M params)
-- EMA updates operate on FSDP parameters after all-gather (SHARD_GRAD_OP keeps full params materialized)
-- Disables GradScaler for BF16
-
-> **Note**: Checkpoint saving in the FSDP script is minimal (benchmark metadata only).
-> For production training, implement FSDP-aware checkpointing with `StateDictType.FULL_STATE_DICT`
-> or `SHARDED_STATE_DICT`.
-
 ## 7. Parse Results
 
 ```bash
@@ -204,7 +181,7 @@ Same as V-JEPA 2: **`srun` directly** (not `srun + torchrun`). The `run_train.py
 
 With `img_data.rank_ratio: 0.5` on 64 GPUs:
 - **Ranks 0-31** (32 GPUs): process images, batch size 72/GPU = 2,304 images/step
-- **Ranks 32-63** (32 GPUs): process video, batch size 48/GPU = 1,536 videos/step
+- **Ranks 32-63** (32 GPUs): process video, batch size 24/GPU = 768 videos/step
 
 The code automatically adjusts the per-GPU video batch size to maintain the configured global batch size across the reduced number of video ranks. Each rank creates a single data loader for its assigned modality.
 
@@ -232,9 +209,9 @@ mkdir -p logs/vjepa21_nsys
 # Baseline profile
 sbatch slurm/nsys_profile_b200.sbatch
 
-# Profile a specific config (e.g. after FSDP optimization)
-NSYS_PROFILE_DIR=phase4_fsdp \
-CONFIG=/fsx/${USER}/vjepa2.1/configs/benchmark-vitg-8nodes-fsdp.yaml \
+# Profile a specific config (e.g. optimized)
+NSYS_PROFILE_DIR=optimized \
+CONFIG=/fsx/${USER}/vjepa2.1/configs/benchmark-vitg-8nodes-optimized.yaml \
     sbatch slurm/nsys_profile_b200.sbatch
 ```
 
@@ -243,14 +220,13 @@ Profiles are saved to `/fsx/${USER}/vjepa2.1/nsys/<profile_dir>/rank0.nsys-rep`.
 ```
 nsys/
 ├── baseline/          # Un-optimized baseline
-├── phase2_noscaler/   # GradScaler disabled for BF16
-├── phase4_fsdp/       # FSDP sharded training
+├── optimized/         # torch.compile + no activation checkpointing
 └── ...
 ```
 
 ## Benchmark Results
 
-See the V-JEPA 2 README for detailed benchmark results comparing H200 and B200 performance for both V-JEPA 2 and V-JEPA 2.1. Results are generated locally using `parse_benchmark.py` after running benchmark jobs.
+Use `scripts/parse_benchmark.py` to produce benchmark results from training logs. See Section 7 (Parse Results) for usage examples.
 
 ### Data Loading Optimization (TorchCodec)
 

@@ -7,6 +7,15 @@ This test case demonstrates distributed pre-training of [V-JEPA 2](https://githu
 
 We benchmark the **ViT-g/16 (1B parameters)** encoder variant using the **Something-Something v2 (SSv2)** video dataset across 8 nodes of p5en.48xlarge instances (64 x NVIDIA H200 GPUs).
 
+> **Directory Structure Note**: V-JEPA 2 and V-JEPA 2.1 are maintained as
+> separate test case directories (`vjepa2/` and `vjepa2.1/`) to mirror the
+> upstream [facebookresearch/vjepa2](https://github.com/facebookresearch/vjepa2)
+> repository structure, where `app/vjepa/` and `app/vjepa_2_1/` are distinct
+> training applications with different model architectures, loss functions, and
+> data pipelines. They share the same codebase and container image, but their
+> configs, benchmarks, and launch patterns differ. Shared utility scripts are
+> symlinked from `vjepa2/scripts/` to avoid duplication.
+
 | | |
 |---|---|
 | **Model** | V-JEPA 2 ViT-g/16 (1B params) |
@@ -355,11 +364,11 @@ The `run_train.py` launcher applies monkey patches at startup based on environme
 - **`VJEPA_CYCLING_SAMPLER=1`**: Patches `DistributedSampler` and `DistributedWeightedSampler` to cycle infinitely, eliminating epoch boundary stalls where all workers wait for the slowest rank
 - **`VJEPA_THREADED_DECODE=1`** (experimental): Replaces the multiprocess DataLoader with a threaded variant. Only beneficial for large (720p+) videos where decode dominates transforms
 
-For the full investigation including GPU decode benchmarks, threaded DataLoader results, and microbenchmarks, see the benchmark analysis in the `benchmarks/` directory (generated locally after running profiling jobs).
+For the full investigation including GPU decode benchmarks, threaded DataLoader results, and microbenchmarks, run the profiling jobs described in Section 9.
 
 ## Benchmark Results
 
-Benchmark results comparing H200 and B200 performance are generated locally in the `benchmarks/` directory after running the benchmark sbatch scripts. Use `scripts/parse_benchmark.py` to produce results from training logs.
+Use `scripts/parse_benchmark.py` to produce benchmark results from training logs after running the benchmark sbatch scripts. See Section 6 for usage examples.
 
 ## References
 

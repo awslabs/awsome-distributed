@@ -20,9 +20,10 @@ RUN cd /tmp && \
     cd /tmp && rm -rf aws-efa-installer
 
 # Install NCCL dev headers for EFA plugin compilation.
-# The base NVIDIA image already provides libnccl.so; this is best-effort
-# to get headers and will not fail the build if unavailable.
-RUN apt-get update && apt-get install -y libnccl-dev && rm -rf /var/lib/apt/lists/* || true
+# The base NVIDIA image (pytorch:25.03-py3) ships NCCL 2.25 at runtime.
+# NOTE: For B200 GPUs requiring NCCL >= 2.29, use a NeMo container instead
+# (see B200 section in README.md). This container targets H200/p5en.
+RUN apt-get update && apt-get install -y libnccl-dev && rm -rf /var/lib/apt/lists/*
 
 # Install V-JEPA 2 dependencies (pinned to tested versions)
 RUN pip install --no-cache-dir \

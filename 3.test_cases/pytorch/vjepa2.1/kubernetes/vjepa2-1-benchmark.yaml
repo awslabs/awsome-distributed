@@ -37,8 +37,8 @@ spec:
         spec:
           containers:
             - name: vjepa2-1
-              # Replace with your ECR image URI
-              image: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/vjepa2:vjepa2.1
+              # Replace with your ECR image URI (tag matches pinned commit in Dockerfile)
+              image: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/vjepa2:204698b4
               imagePullPolicy: Always
               command:
                 - torchrun

@@ -73,4 +73,6 @@ if [ -d "/opt/sagemaker_cluster" ]; then
     AUTO_RESUME="--auto-resume=1"
 fi
 
+mkdir -p logs/vjepa2_benchmark
+
 srun ${AUTO_RESUME} -l "${ARGS[@]}" python scripts/run_train.py "${TRAINING_ARGS[@]}"
