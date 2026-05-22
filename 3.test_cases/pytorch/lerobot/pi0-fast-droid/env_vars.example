@@ -1,0 +1,24 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+# Copy this file to env_vars and fill in your values:
+#   cp env_vars.example env_vars
+#   source env_vars
+
+# HuggingFace Hub token (required for downloading gated models like Gemma 2B)
+export HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxx"
+
+# HuggingFace cache directory (should be on shared filesystem)
+export HF_HOME="/fsx/.cache/huggingface"
+
+# Weights & Biases API key (optional, for experiment tracking)
+export WANDB_API_KEY="your-wandb-key"
+
+# Training output directory (on shared filesystem)
+export OUTPUT_DIR="/fsx/lerobot-output"
+
+# Number of nodes for multi-node training
+export NUM_NODES=2
+
+# GPUs per node (8 for p5/p6, 4 for g5.12xlarge)
+export GPUS_PER_NODE=8

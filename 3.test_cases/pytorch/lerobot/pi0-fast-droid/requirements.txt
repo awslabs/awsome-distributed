@@ -1,0 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+# Core dependencies (LeRobot and its [pi] extra are installed separately in the Dockerfile)
+accelerate>=1.10.0,<2.0.0
+wandb>=0.24.0,<0.25.0
