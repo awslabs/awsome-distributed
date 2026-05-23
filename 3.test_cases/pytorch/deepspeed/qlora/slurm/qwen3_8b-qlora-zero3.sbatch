@@ -46,7 +46,7 @@ export HF_HOME=/fsx/hf_cache
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # NCCL debugging (set to WARN for production)
-export NCCL_DEBUG=INFO
+export NCCL_DEBUG=WARN
 
 # Enable Python fault handler and torch elastic error tracking
 export PYTHONFAULTHANDLER=1
@@ -54,10 +54,13 @@ export TORCH_SHOW_CPP_STACKTRACES=1
 
 ## EFA settings — uncomment for EFA-enabled instances (p4d.24xlarge, p5.48xlarge)
 ## Not needed for g5 instances (no EFA)
-#export FI_PROVIDER=efa
-#export FI_EFA_USE_HUGE_PAGE=0
-#export FI_EFA_SET_CUDA_SYNC_MEMOPS=0
-#export NCCL_SOCKET_IFNAME=^docker,lo,veth,eth
+export FI_PROVIDER=efa
+export FI_EFA_USE_HUGE_PAGE=0
+export FI_EFA_SET_CUDA_SYNC_MEMOPS=0
+export NCCL_SOCKET_IFNAME=^docker,lo,veth,eth
+
+# Use system NCCL which has EFA support (container NCCL may lack OFI plugin)
+export LD_PRELOAD=/lib/x86_64-linux-gnu/libnccl.so
 
 # HuggingFace Hub timeout for large clusters
 export HF_HUB_ETAG_TIMEOUT=60

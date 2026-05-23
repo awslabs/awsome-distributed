@@ -1,0 +1,630 @@
+name: DeepSpeed Regression Test
+
+on:
+  schedule:
+    - cron: '0 14 * * 6'
+  push:
+    branches: [main]
+    paths:
+      - '3.test_cases/pytorch/deepspeed/**'
+  pull_request:
+    paths:
+      - '3.test_cases/pytorch/deepspeed/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  SLURM_HOST: p5en.smml.aiml.aws.dev
+  SLURM_USER: ghactions
+  AWS_ROLE_ARN: arn:aws:iam::159553542841:role/awslabs-AOSH-GitHubActionsRole
+  BASE_PATH: /fsx/agents/pr-reviews
+  HOME_PATH: /home/ghactions
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-containers:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-build
+      cancel-in-progress: false
+    timeout-minutes: 90
+    outputs:
+      qlora_sqsh: ${{ steps.build.outputs.qlora_sqsh }}
+      gpt_sqsh: ${{ steps.build.outputs.gpt_sqsh }}
+      remote_code_path: ${{ steps.setup.outputs.remote_code_path }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          path: source-code
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SLURM_SSH_KEY }}" > ~/.ssh/slurm_key
+          chmod 600 ~/.ssh/slurm_key
+          for i in {1..5}; do
+            if ssh-keyscan -H "${{ env.SLURM_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null; then
+              echo "SSH keyscan successful"
+              break
+            fi
+            echo "SSH keyscan attempt $i failed, retrying..."
+            sleep 5
+          done
+
+      - name: Setup Environment Variables
+        id: setup
+        run: |
+          BUILD_ID="${{ github.run_id }}"
+          REMOTE_CODE_PATH="${{ env.BASE_PATH }}/deepspeed-tests/code-${BUILD_ID}"
+          echo "remote_code_path=$REMOTE_CODE_PATH" >> "$GITHUB_OUTPUT"
+          echo "REMOTE_CODE_PATH=$REMOTE_CODE_PATH" >> "$GITHUB_ENV"
+          echo "BUILD_ID=$BUILD_ID" >> "$GITHUB_ENV"
+
+      - name: Transfer Code to Cluster
+        run: |
+          ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} \
+            "mkdir -p ${{ env.REMOTE_CODE_PATH }}"
+          for i in {1..3}; do
+            if scp -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 -r \
+              source-code/* ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }}:${{ env.REMOTE_CODE_PATH }}/; then
+              echo "Code transfer successful"
+              break
+            fi
+            echo "Transfer attempt $i failed, retrying..."
+            sleep 10
+          done
+
+      - name: Build Containers
+        id: build
+        run: |
+          QLORA_SQSH="/fsx/apps/qwen3-qlora-${{ env.BUILD_ID }}.sqsh"
+          GPT_SQSH="/fsx/apps/deepspeed-${{ env.BUILD_ID }}.sqsh"
+          echo "qlora_sqsh=$QLORA_SQSH" >> "$GITHUB_OUTPUT"
+          echo "gpt_sqsh=$GPT_SQSH" >> "$GITHUB_OUTPUT"
+
+          # Build QLoRA container first
+          ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            -o ServerAliveInterval=60 -o ServerAliveCountMax=30 \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} << EOF
+          set -ex
+          # Clean /run/enroot which consumes most of the 13GB /run tmpfs
+          export ENROOT_DATA_PATH=/fsx/enroot ENROOT_RUNTIME_PATH=/fsx/enroot-runtime
+          mkdir -p /fsx/enroot /fsx/enroot-runtime
+          enroot list 2>/dev/null | xargs -I{} enroot remove -f {} 2>/dev/null || true
+          rm -rf /run/enroot/* 2>/dev/null || true
+          # Clean up Docker stale state
+          docker kill $(docker ps -q) 2>/dev/null || true
+          docker container prune -f || true
+          docker buildx prune -af || true
+          docker image prune -f || true
+          # Redirect temp dirs to /fsx (login node root disk is only 78GB)
+          export TMPDIR=/fsx/tmp ENROOT_TEMP_PATH=/fsx/tmp
+          export DOCKER_TMPDIR=/fsx/tmp
+          mkdir -p /fsx/tmp /fsx/apps
+          # Check disk space
+          df -h / /run
+          cd ${{ env.REMOTE_CODE_PATH }}/3.test_cases/pytorch/deepspeed/qlora
+          echo "=== Building QLoRA container ==="
+          docker build -t qwen3-qlora -f Dockerfile .
+          enroot import -o $QLORA_SQSH dockerd://qwen3-qlora:latest
+          # Remove built image but keep base layers cached
+          docker rmi qwen3-qlora || true
+          docker image prune -f || true
+          df -h / /run
+          echo "QLoRA container built: $QLORA_SQSH"
+
+          # Build GPT DeepSpeed container second (shares same base image)
+          cd ${{ env.REMOTE_CODE_PATH }}/3.test_cases/pytorch/deepspeed
+          echo "=== Building GPT DeepSpeed container ==="
+          docker build -t deepspeed -f 0.deepspeed.dockerfile .
+          enroot import -o $GPT_SQSH dockerd://deepspeed:latest
+          docker rmi deepspeed || true
+          rm -rf /fsx/tmp/*
+          df -h / /run
+          echo "GPT container built: $GPT_SQSH"
+          EOF
+
+      - name: Cleanup on Failure
+        if: failure()
+        run: |
+          ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} << EOF
+          rm -rf ${{ env.REMOTE_CODE_PATH }}
+          rm -f /fsx/apps/qwen3-qlora-${{ env.BUILD_ID }}.sqsh
+          rm -f /fsx/apps/deepspeed-${{ env.BUILD_ID }}.sqsh
+          # Remove built images but keep base layers
+          docker rmi qwen3-qlora deepspeed 2>/dev/null || true
+          docker container prune -f || true
+          docker image prune -f || true
+          EOF
+
+  qlora:
+    needs: build-containers
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        zero_config: [zero2, zero3]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-qlora-${{ matrix.zero_config }}
+      cancel-in-progress: false
+    timeout-minutes: 120
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SLURM_SSH_KEY }}" > ~/.ssh/slurm_key
+          chmod 600 ~/.ssh/slurm_key
+          for i in {1..5}; do
+            if ssh-keyscan -H "${{ env.SLURM_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null; then
+              echo "SSH keyscan successful"
+              break
+            fi
+            echo "SSH keyscan attempt $i failed, retrying..."
+            sleep 5
+          done
+
+      - name: Setup Environment Variables
+        id: setup
+        run: |
+          BUILD_ID="${{ github.run_id }}"
+          REMOTE_CODE_PATH="${{ needs.build-containers.outputs.remote_code_path }}"
+          LOG_DIR="${{ env.HOME_PATH }}/ds-qlora-logs-${BUILD_ID}-${{ matrix.zero_config }}"
+          SQSH_PATH="${{ needs.build-containers.outputs.qlora_sqsh }}"
+          echo "REMOTE_CODE_PATH=$REMOTE_CODE_PATH" >> "$GITHUB_ENV"
+          echo "LOG_DIR=$LOG_DIR" >> "$GITHUB_ENV"
+          echo "BUILD_ID=$BUILD_ID" >> "$GITHUB_ENV"
+          echo "SQSH_PATH=$SQSH_PATH" >> "$GITHUB_ENV"
+
+      - name: Create Log Directory
+        run: |
+          ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} \
+            "mkdir -p ${{ env.LOG_DIR }}"
+
+      - name: Pre-cache Model and Dataset
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # Write precache script to remote
+          ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} \
+            "mkdir -p /fsx/.cache/huggingface /fsx/tmp && printf '%s\n' \
+              'import os' \
+              'from huggingface_hub import snapshot_download' \
+              'from datasets import load_dataset' \
+              'token = os.environ.get(\"HF_TOKEN\", \"\")' \
+              'print(\"Downloading Qwen/Qwen3-8B...\")' \
+              'snapshot_download(\"Qwen/Qwen3-8B\", token=token)' \
+              'print(\"Downloading medical-o1-reasoning-SFT dataset...\")' \
+              'load_dataset(\"FreedomIntelligence/medical-o1-reasoning-SFT\", \"en\", split=\"train\")' \
+              'print(\"Pre-cache complete.\")' \
+              > /fsx/tmp/precache.py"
+
+          # Run precache inside the container
+          ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            -o ServerAliveInterval=60 -o ServerAliveCountMax=30 \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} << EOF
+          set -ex
+          export ENROOT_DATA_PATH=/fsx/enroot ENROOT_RUNTIME_PATH=/fsx/enroot-runtime
+          mkdir -p /fsx/enroot /fsx/enroot-runtime
+          enroot create --name qlora-precache-${{ matrix.zero_config }} ${{ env.SQSH_PATH }} || true
+          enroot start --rw --mount /fsx:/fsx \
+            --env HF_HOME=/fsx/.cache/huggingface --env HF_TOKEN=${HF_TOKEN} \
+            qlora-precache-${{ matrix.zero_config }} \
+            /fsx/tmp/precache.py
+          enroot remove -f qlora-precache-${{ matrix.zero_config }} || true
+          EOF
+
+      - name: Prepare and Submit Slurm Job
+        id: submit_job
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          QLORA_SLURM_DIR="${{ env.REMOTE_CODE_PATH }}/3.test_cases/pytorch/deepspeed/qlora/slurm"
+          SBATCH_FILE="qwen3_8b-qlora-${{ matrix.zero_config }}.sbatch"
+
+          ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} << EOF
+          set -ex
+          export PATH=/opt/slurm/bin:\$PATH
+          cd $QLORA_SLURM_DIR
+
+          cp "$SBATCH_FILE" regression_test.sbatch
+
+          # Patch output/error paths
+          sed -i "s|#SBATCH --output=.*|#SBATCH --output=${{ env.LOG_DIR }}/%x_%j.out|" regression_test.sbatch
+          sed -i "s|#SBATCH --error=.*|#SBATCH --error=${{ env.LOG_DIR }}/%x_%j.err|" regression_test.sbatch
+
+          # Set container image
+          sed -i "s|^CONTAINER_IMAGE=\${CONTAINER_IMAGE:-}|CONTAINER_IMAGE=${{ env.SQSH_PATH }}|" regression_test.sbatch
+
+          # Override output dir for CI
+          sed -i "s|OUTPUT_DIR=.*|OUTPUT_DIR=${{ env.LOG_DIR }}/training_output|" regression_test.sbatch
+
+          # Inject --max_samples 100 for quick CI run
+          sed -i 's|--resume_from_checkpoint auto|--resume_from_checkpoint auto --max_samples 100|' regression_test.sbatch
+
+          # Set HF_HOME and inject HF_TOKEN
+          sed -i "s|export HF_HOME=.*|export HF_HOME=/fsx/.cache/huggingface|" regression_test.sbatch
+          sed -i "/export HF_HOME/a export HF_TOKEN=${HF_TOKEN}" regression_test.sbatch
+
+          # Submit job
+          JOB_ID=\$(sbatch --parsable --partition=p5en regression_test.sbatch)
+          echo "\$JOB_ID" > ${{ env.LOG_DIR }}/job_id.txt
+          echo "Submitted Slurm job: \$JOB_ID"
+          EOF
+
+          sleep 2
+          JOB_ID=$(ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} \
+            "cat ${{ env.LOG_DIR }}/job_id.txt")
+          echo "job_id=$JOB_ID" >> "$GITHUB_OUTPUT"
+          echo "JOB_ID=$JOB_ID" >> "$GITHUB_ENV"
+          echo "Submitted Slurm job: $JOB_ID"
+
+      - name: Monitor Slurm Job
+        run: |
+          echo "Monitoring job ${{ env.JOB_ID }}..."
+          START_TIME=$(date +%s)
+          TIMEOUT=7200  # 2 hours
+
+          ssh_cmd() {
+            for attempt in 1 2 3; do
+              if ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+                ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} "$@"; then
+                return 0
+              fi
+              echo "SSH attempt $attempt failed, retrying..."
+              sleep 5
+            done
+            return 1
+          }
+
+          while true; do
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+            if [ $ELAPSED -gt $TIMEOUT ]; then
+              echo "Timeout reached after $((TIMEOUT / 60)) minutes"
+              exit 1
+            fi
+
+            JOB_STATUS=$(ssh_cmd "export PATH=/opt/slurm/bin:\$PATH; squeue -j ${{ env.JOB_ID }} -h -o %T 2>/dev/null || true")
+
+            if [ -z "$JOB_STATUS" ]; then
+              # Job no longer in queue — check final state via sacct
+              FINAL_STATE=$(ssh_cmd "export PATH=/opt/slurm/bin:\$PATH; sacct -j ${{ env.JOB_ID }} --format=State --noheader -P | head -1" | tr -d '[:space:]')
+              echo "Job finished with state: $FINAL_STATE"
+              if [ "$FINAL_STATE" = "COMPLETED" ]; then
+                echo "Job completed successfully"
+                break
+              else
+                echo "Job failed with state: $FINAL_STATE"
+                echo "=== Last 200 lines of stdout ==="
+                ssh_cmd "tail -200 ${{ env.LOG_DIR }}/*_${{ env.JOB_ID }}.out 2>/dev/null || true"
+                echo "=== Last 200 lines of stderr ==="
+                ssh_cmd "tail -200 ${{ env.LOG_DIR }}/*_${{ env.JOB_ID }}.err 2>/dev/null || true"
+                exit 1
+              fi
+            fi
+
+            echo "--- Job status: $JOB_STATUS (elapsed: $((ELAPSED / 60)) min) ---"
+            sleep 30
+          done
+
+      - name: Retrieve Logs
+        if: always()
+        run: |
+          mkdir -p ./logs
+          for i in {1..3}; do
+            if scp -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 -r \
+              ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }}:${{ env.LOG_DIR }}/* ./logs/ 2>/dev/null; then
+              echo "Logs retrieved successfully"
+              break
+            fi
+            echo "Log retrieval attempt $i failed, retrying..."
+            sleep 10
+          done
+
+      - name: Upload Logs as Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ds-qlora-${{ matrix.zero_config }}-logs-${{ github.run_id }}
+          path: ./logs
+          retention-days: 60
+
+      - name: Cleanup
+        if: always()
+        run: |
+          # Cancel job if still running
+          if [ -n "${{ env.JOB_ID }}" ]; then
+            ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no \
+              ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} \
+              "export PATH=/opt/slurm/bin:\$PATH; scancel ${{ env.JOB_ID }} 2>/dev/null || true"
+          fi
+          # Clean up log directory
+          ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} \
+            "rm -rf ${{ env.LOG_DIR }}" || true
+          rm -rf ./logs
+          echo "Cleanup completed!"
+
+  gpt-103b:
+    needs: build-containers
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-gpt-103b
+      cancel-in-progress: false
+    timeout-minutes: 180
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SLURM_SSH_KEY }}" > ~/.ssh/slurm_key
+          chmod 600 ~/.ssh/slurm_key
+          for i in {1..5}; do
+            if ssh-keyscan -H "${{ env.SLURM_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null; then
+              echo "SSH keyscan successful"
+              break
+            fi
+            echo "SSH keyscan attempt $i failed, retrying..."
+            sleep 5
+          done
+
+      - name: Setup Environment Variables
+        id: setup
+        run: |
+          BUILD_ID="${{ github.run_id }}"
+          REMOTE_CODE_PATH="${{ needs.build-containers.outputs.remote_code_path }}"
+          LOG_DIR="${{ env.HOME_PATH }}/ds-gpt103b-logs-${BUILD_ID}"
+          SQSH_PATH="${{ needs.build-containers.outputs.gpt_sqsh }}"
+          echo "REMOTE_CODE_PATH=$REMOTE_CODE_PATH" >> "$GITHUB_ENV"
+          echo "LOG_DIR=$LOG_DIR" >> "$GITHUB_ENV"
+          echo "BUILD_ID=$BUILD_ID" >> "$GITHUB_ENV"
+          echo "SQSH_PATH=$SQSH_PATH" >> "$GITHUB_ENV"
+
+      - name: Create Log Directory
+        run: |
+          ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} \
+            "mkdir -p ${{ env.LOG_DIR }}"
+
+      - name: Setup Megatron-DeepSpeed and Data
+        run: |
+          ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            -o ServerAliveInterval=60 -o ServerAliveCountMax=30 \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} << EOF
+          set -ex
+
+          # Clone Megatron-DeepSpeed if not present
+          if [ ! -d /fsx/deepspeed/Megatron-DeepSpeed ]; then
+            mkdir -p /fsx/deepspeed
+            git clone https://github.com/microsoft/Megatron-DeepSpeed.git /fsx/deepspeed/Megatron-DeepSpeed
+          fi
+
+          # Download GPT-2 tokenizer files if not present
+          mkdir -p /fsx/deepspeed/data
+          if [ ! -f /fsx/deepspeed/data/gpt2-vocab.json ]; then
+            wget -q -O /fsx/deepspeed/data/gpt2-vocab.json \
+              https://s3.amazonaws.com/models.huggingface.co/bert/gpt2-vocab.json
+          fi
+          if [ ! -f /fsx/deepspeed/data/gpt2-merges.txt ]; then
+            wget -q -O /fsx/deepspeed/data/gpt2-merges.txt \
+              https://s3.amazonaws.com/models.huggingface.co/bert/gpt2-merges.txt
+          fi
+
+          # Generate synthetic BookCorpus data if not present
+          if [ ! -f /fsx/deepspeed/data/BookCorpusDataset_text_document.idx ]; then
+            echo "Generating synthetic training data..."
+            # Create synthetic corpus
+            python3 -c "
+          import json, os
+          corpus_path = '/fsx/deepspeed/data/synthetic_corpus.json'
+          if not os.path.exists(corpus_path):
+              samples = []
+              for i in range(10000):
+                  samples.append({'text': f'This is synthetic training sample number {i}. ' * 20})
+              with open(corpus_path, 'w') as f:
+                  for s in samples:
+                      f.write(json.dumps(s) + chr(10))
+              print(f'Created {len(samples)} synthetic samples')
+          "
+            # Preprocess data inside the container
+            # Use /fsx for enroot data and runtime (login node /run tmpfs too small)
+            export ENROOT_DATA_PATH=/fsx/enroot ENROOT_RUNTIME_PATH=/fsx/enroot-runtime
+            mkdir -p /fsx/enroot /fsx/enroot-runtime
+            enroot remove -f ds-preprocess-${{ env.BUILD_ID }} 2>/dev/null || true
+            enroot remove -f deepspeed-preprocess 2>/dev/null || true
+            enroot create --name ds-preprocess-${{ env.BUILD_ID }} ${{ env.SQSH_PATH }}
+            enroot start --rw \
+              --mount /fsx:/fsx \
+              ds-preprocess-${{ env.BUILD_ID }} \
+              /usr/bin/bash -c "pip install nltk && python3 -c 'import nltk; nltk.download(\"punkt\", quiet=True)' && python3 /fsx/deepspeed/Megatron-DeepSpeed/tools/preprocess_data.py \
+                --input /fsx/deepspeed/data/synthetic_corpus.json \
+                --output-prefix /fsx/deepspeed/data/BookCorpusDataset \
+                --vocab-file /fsx/deepspeed/data/gpt2-vocab.json \
+                --merge-file /fsx/deepspeed/data/gpt2-merges.txt \
+                --tokenizer-type GPT2BPETokenizer \
+                --append-eod \
+                --workers 8"
+            enroot remove -f ds-preprocess-${{ env.BUILD_ID }} || true
+            echo "Data preprocessing complete."
+          fi
+          echo "Megatron-DeepSpeed and data setup complete."
+          EOF
+
+      - name: Prepare and Submit Slurm Job
+        id: submit_job
+        run: |
+          GPT_SLURM_DIR="${{ env.REMOTE_CODE_PATH }}/3.test_cases/pytorch/deepspeed/gpt/slurm"
+
+          ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} << EOF
+          set -ex
+          export PATH=/opt/slurm/bin:\$PATH
+          cd $GPT_SLURM_DIR
+
+          cp pretrain_gpt_103b.sbatch regression_test.sbatch
+
+          # Patch output/error paths
+          sed -i "s|#SBATCH --output=.*|#SBATCH --output=${{ env.LOG_DIR }}/%x_%j.out|" regression_test.sbatch
+          sed -i "s|#SBATCH --error=.*|#SBATCH --error=${{ env.LOG_DIR }}/%x_%j.err|" regression_test.sbatch
+
+          # Submit with CI overrides: 4 nodes, TP=8, PP=4, ZeRO=0, 10 iters, fusions on
+          JOB_ID=\$(sbatch --parsable --partition=p5en --nodes=4 \
+            --export=ALL,TP=8,PP=4,ZERO_STAGE=0,TRAIN_ITERS=10,ENABLE_FUSIONS=1,IMAGE=${{ env.SQSH_PATH }} \
+            regression_test.sbatch)
+          echo "\$JOB_ID" > ${{ env.LOG_DIR }}/job_id.txt
+          echo "Submitted Slurm job: \$JOB_ID"
+          EOF
+
+          sleep 2
+          JOB_ID=$(ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} \
+            "cat ${{ env.LOG_DIR }}/job_id.txt")
+          echo "job_id=$JOB_ID" >> "$GITHUB_OUTPUT"
+          echo "JOB_ID=$JOB_ID" >> "$GITHUB_ENV"
+          echo "Submitted Slurm job: $JOB_ID"
+
+      - name: Monitor Slurm Job
+        run: |
+          echo "Monitoring job ${{ env.JOB_ID }}..."
+          START_TIME=$(date +%s)
+          TIMEOUT=7200  # 2 hours
+
+          ssh_cmd() {
+            for attempt in 1 2 3; do
+              if ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+                ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} "$@"; then
+                return 0
+              fi
+              echo "SSH attempt $attempt failed, retrying..."
+              sleep 5
+            done
+            return 1
+          }
+
+          while true; do
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+            if [ $ELAPSED -gt $TIMEOUT ]; then
+              echo "Timeout reached after $((TIMEOUT / 60)) minutes"
+              exit 1
+            fi
+
+            JOB_STATUS=$(ssh_cmd "export PATH=/opt/slurm/bin:\$PATH; squeue -j ${{ env.JOB_ID }} -h -o %T 2>/dev/null || true")
+
+            if [ -z "$JOB_STATUS" ]; then
+              FINAL_STATE=$(ssh_cmd "export PATH=/opt/slurm/bin:\$PATH; sacct -j ${{ env.JOB_ID }} --format=State --noheader -P | head -1" | tr -d '[:space:]')
+              echo "Job finished with state: $FINAL_STATE"
+              if [ "$FINAL_STATE" = "COMPLETED" ]; then
+                echo "Job completed successfully"
+                break
+              else
+                echo "Job failed with state: $FINAL_STATE"
+                echo "=== Last 200 lines of stdout ==="
+                ssh_cmd "tail -200 ${{ env.LOG_DIR }}/*_${{ env.JOB_ID }}.out 2>/dev/null || true"
+                echo "=== Last 200 lines of stderr ==="
+                ssh_cmd "tail -200 ${{ env.LOG_DIR }}/*_${{ env.JOB_ID }}.err 2>/dev/null || true"
+                exit 1
+              fi
+            fi
+
+            echo "--- Job status: $JOB_STATUS (elapsed: $((ELAPSED / 60)) min) ---"
+            sleep 30
+          done
+
+      - name: Retrieve Logs
+        if: always()
+        run: |
+          mkdir -p ./logs
+          for i in {1..3}; do
+            if scp -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 -r \
+              ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }}:${{ env.LOG_DIR }}/* ./logs/ 2>/dev/null; then
+              echo "Logs retrieved successfully"
+              break
+            fi
+            echo "Log retrieval attempt $i failed, retrying..."
+            sleep 10
+          done
+
+      - name: Upload Logs as Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ds-gpt103b-logs-${{ github.run_id }}
+          path: ./logs
+          retention-days: 60
+
+      - name: Cleanup
+        if: always()
+        run: |
+          # Cancel job if still running
+          if [ -n "${{ env.JOB_ID }}" ]; then
+            ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no \
+              ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} \
+              "export PATH=/opt/slurm/bin:\$PATH; scancel ${{ env.JOB_ID }} 2>/dev/null || true"
+          fi
+          # Clean up log directory
+          ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} \
+            "rm -rf ${{ env.LOG_DIR }}" || true
+          rm -rf ./logs
+          echo "Cleanup completed!"
+
+  cleanup:
+    needs: [build-containers, qlora, gpt-103b]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SLURM_SSH_KEY }}" > ~/.ssh/slurm_key
+          chmod 600 ~/.ssh/slurm_key
+          ssh-keyscan -H "${{ env.SLURM_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Cleanup Shared Resources
+        run: |
+          ssh -i ~/.ssh/slurm_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            ${{ env.SLURM_USER }}@${{ env.SLURM_HOST }} << EOF
+          rm -rf ${{ needs.build-containers.outputs.remote_code_path }}
+          rm -f ${{ needs.build-containers.outputs.qlora_sqsh }}
+          rm -f ${{ needs.build-containers.outputs.gpt_sqsh }}
+          docker rmi qwen3-qlora deepspeed 2>/dev/null || true
+          docker container prune -f || true
+          docker image prune -f || true
+          echo "Shared resources cleaned up."
+          EOF

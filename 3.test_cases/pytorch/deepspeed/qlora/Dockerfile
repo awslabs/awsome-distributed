@@ -45,8 +45,7 @@ RUN apt-get install -y --no-install-recommends \
     libtool \
     openssh-client \
     openssh-server \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
+    wget
 
 # SSH configuration for multi-node
 RUN rm -rf /root/.ssh/ \
@@ -137,14 +136,12 @@ WORKDIR /app
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install PyTorch with CUDA 12.9 support
-# Note: torch 2.10+ has a breaking LR scheduler change (strict zip) that is
-# incompatible with some DeepSpeed/transformers versions. Pin to <2.10 until
-# upstream libraries catch up.
-RUN pip install --no-cache-dir 'torch>=2.7.0,<2.10.0' --index-url https://download.pytorch.org/whl/cu129
-
-# Install other dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Note: pytorch:25.04-py3 base image already includes torch with CUDA 12.9
+# support. We skip installing torch separately to avoid version conflicts.
+# The base image sets PIP_CONSTRAINT which pins dill==0.3.9, but all current
+# versions of `datasets` require dill<0.3.9. Unset the constraint file to
+# allow pip to resolve freely.
+RUN PIP_CONSTRAINT="" pip install --no-cache-dir -r requirements.txt
 
 # ============================================================
 # 9. Application code
@@ -176,6 +173,9 @@ ENV NCCL_TUNER_PLUGIN=/opt/amazon/ofi-nccl/lib/libnccl-ofi-tuner.so
 # PyTorch memory allocator -- expandable segments reduces fragmentation
 # Note: capital T is required in pytorch:25.04 containers
 ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# Clean up apt lists to reduce image size
+RUN rm -rf /var/lib/apt/lists/*
 
 # Entrypoint reads PET_* env vars set by the Kubeflow Training Operator
 # and launches torchrun with the correct number of processes per node.

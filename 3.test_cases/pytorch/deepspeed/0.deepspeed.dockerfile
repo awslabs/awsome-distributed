@@ -147,7 +147,7 @@ RUN pip3 install --no-cache-dir \
     awscli pynvml \
     transformers==${TRANSFORMERS_VERSION} \
     sentencepiece python-etcd \
-    deepspeed>=0.16,<1.0 accelerate>=1.0,<2.0
+    'deepspeed>=0.16,<1.0' 'accelerate>=1.0,<2.0'
 
 RUN rm -rf /var/lib/apt/lists/*
 
