@@ -25,7 +25,7 @@ botocore==1.35.0
 # Utilities
 pyyaml==6.0.2
 python-json-logger==2.0.7
-requests==2.32.3
+requests==2.33.0
 filelock==3.20.3
 packaging==24.2
 
