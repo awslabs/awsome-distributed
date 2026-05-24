@@ -22,6 +22,8 @@ You can follow the workshops below to train models on AWS. Each contains example
 | ---------------------------------------------------------------------------------- | --------------------------------------------------------------- |
 | [AI on SageMaker HyperPod](https://awslabs.github.io/ai-on-sagemaker-hyperpod/)   | Workshop for SageMaker HyperPod, shows how to deploy and monitor it |
 | [AWS ParallelCluster](https://catalog.workshops.aws/ml-on-aws-parallelcluster)     | Similar workshop as HyperPod but on ParallelCluster             |
+| [AWS Parallel Computing Service](https://catalog.workshops.aws/ml-on-pcs)     | Similar workshop as HyperPod but on AWS Parallel Computing Service             |
+
 
 ## Blog
 
@@ -44,6 +46,7 @@ Architectures are located in `1.architectures` and consist of utilities and serv
 | [`6.ldap_server`](./1.architectures/6.ldap_server)                             | Identity | LDAP server for multi-user cluster access            |
 | [`7.sagemaker-hyperpod-eks`](./1.architectures/7.sagemaker-hyperpod-eks)       | Compute  | SageMaker HyperPod with EKS orchestration            |
 | [`8.accounting-database`](./1.architectures/8.accounting-database)             | Tooling  | Accounting database for job tracking                 |
+| [`9.aws-pcs`](./1.architectures/9.aws-pcs)                                     | Compute  | Cluster templates for GPU & custom silicon training  |
 
 You will also find [documentation](./1.architectures/efa-cheatsheet.md) for EFA and the recommended environment variables.
 
