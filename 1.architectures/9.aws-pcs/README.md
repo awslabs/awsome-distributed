@@ -156,7 +156,7 @@ The custom DLAMI built by `pcs-ready-dlami-with-enroot-pyxis.yaml` adds containe
 
 ---
 
-0## Usage Examples
+## Usage Examples
 
 ### Example 1: Basic CPU Cluster
 
