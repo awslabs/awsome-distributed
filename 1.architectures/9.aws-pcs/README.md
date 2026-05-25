@@ -54,13 +54,15 @@ Deploy the complete PCS ML cluster with a single nested CloudFormation stack:
 ```bash
 aws cloudformation create-stack \
   --stack-name my-pcs-cluster \
-  --template-url https://awsome-distributed-ai.s3.amazonaws.com/templates/pcs-ml-cluster-deploy-all.yaml \
+  --template-url https://ws-assets-prod-iad-r-iad-ed304a55c2ca1aee.s3.us-east-1.amazonaws.com/2457970d-002f-4794-9e70-3610f2df74ac/pcs-ml-cluster-deploy-all.yaml \
   --parameters \
     ParameterKey=PrimarySubnetAZ,ParameterValue=us-east-1a \
+    ParameterKey=S3BucketName,ParameterValue=ws-assets-prod-iad-r-iad-ed304a55c2ca1aee \
+    ParameterKey=S3KeyPrefix,ParameterValue=2457970d-002f-4794-9e70-3610f2df74ac/ \
     ParameterKey=DeployOnDemandCNG,ParameterValue=true \
     ParameterKey=OnDemandInstanceType,ParameterValue=g5.12xlarge \
     ParameterKey=OnDemandMaxCount,ParameterValue=8 \
-  --capabilities CAPABILITY_IAM
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
 ```
 
 ### Option 2: Individual Components
@@ -163,11 +165,13 @@ The custom DLAMI built by `pcs-ready-dlami-with-enroot-pyxis.yaml` adds containe
 ```bash
 aws cloudformation create-stack \
   --stack-name cpu-training-cluster \
-  --template-url https://awsome-distributed-ai.s3.amazonaws.com/templates/pcs-ml-cluster-deploy-all.yaml \
+  --template-url https://ws-assets-prod-iad-r-iad-ed304a55c2ca1aee.s3.us-east-1.amazonaws.com/2457970d-002f-4794-9e70-3610f2df74ac/pcs-ml-cluster-deploy-all.yaml \
   --parameters \
     ParameterKey=PrimarySubnetAZ,ParameterValue=us-east-1a \
+    ParameterKey=S3BucketName,ParameterValue=ws-assets-prod-iad-r-iad-ed304a55c2ca1aee \
+    ParameterKey=S3KeyPrefix,ParameterValue=2457970d-002f-4794-9e70-3610f2df74ac/ \
     ParameterKey=ComputeNodeInstanceType,ParameterValue=c6i.4xlarge \
-  --capabilities CAPABILITY_IAM
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
 ```
 
 ### Example 2: GPU Cluster with G5 Instances (Single NIC)
@@ -175,15 +179,17 @@ aws cloudformation create-stack \
 ```bash
 aws cloudformation create-stack \
   --stack-name gpu-training-cluster \
-  --template-url https://awsome-distributed-ai.s3.amazonaws.com/templates/pcs-ml-cluster-deploy-all.yaml \
+  --template-url https://ws-assets-prod-iad-r-iad-ed304a55c2ca1aee.s3.us-east-1.amazonaws.com/2457970d-002f-4794-9e70-3610f2df74ac/pcs-ml-cluster-deploy-all.yaml \
   --parameters \
     ParameterKey=PrimarySubnetAZ,ParameterValue=us-east-1a \
+    ParameterKey=S3BucketName,ParameterValue=ws-assets-prod-iad-r-iad-ed304a55c2ca1aee \
+    ParameterKey=S3KeyPrefix,ParameterValue=2457970d-002f-4794-9e70-3610f2df74ac/ \
     ParameterKey=DeployOnDemandCNG,ParameterValue=true \
     ParameterKey=OnDemandCngName,ParameterValue=gpu-g5 \
     ParameterKey=OnDemandQueueName,ParameterValue=gpu \
     ParameterKey=OnDemandInstanceType,ParameterValue=g5.48xlarge \
     ParameterKey=OnDemandMaxCount,ParameterValue=16 \
-  --capabilities CAPABILITY_IAM
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
 ```
 
 ### Example 3: P5 On-Demand Capacity Reservation (ODCR) Cluster (Multi NIC, Static)
@@ -191,9 +197,11 @@ aws cloudformation create-stack \
 ```bash
 aws cloudformation create-stack \
   --stack-name p5-ondemand-cluster \
-  --template-url https://awsome-distributed-ai.s3.amazonaws.com/templates/pcs-ml-cluster-deploy-all.yaml \
+  --template-url https://ws-assets-prod-iad-r-iad-ed304a55c2ca1aee.s3.us-east-1.amazonaws.com/2457970d-002f-4794-9e70-3610f2df74ac/pcs-ml-cluster-deploy-all.yaml \
   --parameters \
     ParameterKey=PrimarySubnetAZ,ParameterValue=us-east-1a \
+    ParameterKey=S3BucketName,ParameterValue=ws-assets-prod-iad-r-iad-ed304a55c2ca1aee \
+    ParameterKey=S3KeyPrefix,ParameterValue=2457970d-002f-4794-9e70-3610f2df74ac/ \
     ParameterKey=DeployPseriesCNG,ParameterValue=true \
     ParameterKey=PseriesCngName,ParameterValue=p5-odcr \
     ParameterKey=PseriesQueueName,ParameterValue=p5 \
@@ -201,7 +209,7 @@ aws cloudformation create-stack \
     ParameterKey=NetworkInterfaceCount,ParameterValue=32 \
     ParameterKey=PseriesMinCount,ParameterValue=4 \
     ParameterKey=PseriesMaxCount,ParameterValue=4 \
-  --capabilities CAPABILITY_IAM
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
 ```
 
 ### Example 4: P5 Cluster with Capacity Blocks for ML (Multi NIC, Static)
@@ -212,9 +220,11 @@ CAPACITY_RESERVATION_ID="cr-0a1b2c3d4e5f6g7h8"
 
 aws cloudformation create-stack \
   --stack-name p5-capacity-block-cluster \
-  --template-url https://awsome-distributed-ai.s3.amazonaws.com/templates/pcs-ml-cluster-deploy-all.yaml \
+  --template-url https://ws-assets-prod-iad-r-iad-ed304a55c2ca1aee.s3.us-east-1.amazonaws.com/2457970d-002f-4794-9e70-3610f2df74ac/pcs-ml-cluster-deploy-all.yaml \
   --parameters \
     ParameterKey=PrimarySubnetAZ,ParameterValue=us-east-1a \
+    ParameterKey=S3BucketName,ParameterValue=ws-assets-prod-iad-r-iad-ed304a55c2ca1aee \
+    ParameterKey=S3KeyPrefix,ParameterValue=2457970d-002f-4794-9e70-3610f2df74ac/ \
     ParameterKey=DeployPseriesCNG,ParameterValue=true \
     ParameterKey=PseriesCngName,ParameterValue=p5-cb \
     ParameterKey=PseriesQueueName,ParameterValue=p5 \
@@ -223,7 +233,7 @@ aws cloudformation create-stack \
     ParameterKey=PseriesMinCount,ParameterValue=4 \
     ParameterKey=PseriesMaxCount,ParameterValue=4 \
     ParameterKey=CapacityReservationId,ParameterValue=${CAPACITY_RESERVATION_ID} \
-  --capabilities CAPABILITY_IAM
+  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
 ```
 
 ---
