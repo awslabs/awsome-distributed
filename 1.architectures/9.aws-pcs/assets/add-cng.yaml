@@ -143,7 +143,7 @@ Resources:
             - if [ "enabled" == "$(sestatus | awk '/^SELinux status:/{print $3}')" ]; then setsebool -P use_nfs_home_dirs 1; fi
             - rsync -aA --ignore-existing /tmp/home/ /home
             - rm -rf /tmp/home/
-            # If provided, mount FSxL filesystem as /shared
-            - if [ ! -z "${FSxLustreFilesystemId}" ]; then amazon-linux-extras install -y lustre=latest; mkdir -p /shared; chmod a+rwx /shared; mount -t lustre ${FSxLustreFilesystemId}.fsx.${AWS::Region}.amazonaws.com@tcp:/${FSxLustreFilesystemMountName} /shared; chmod 777 /shared; fi
+            # If provided, mount FSxL filesystem as /fsx
+            - if [ ! -z "${FSxLustreFilesystemId}" ]; then amazon-linux-extras install -y lustre=latest; mkdir -p /fsx; chmod a+rwx /fsx; mount -t lustre ${FSxLustreFilesystemId}.fsx.${AWS::Region}.amazonaws.com@tcp:/${FSxLustreFilesystemMountName} /fsx; chmod 777 /fsx; fi
 
             --==MYBOUNDARY==
