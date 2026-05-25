@@ -5,7 +5,7 @@ This repository provides reference architectures and deployment templates for se
 ## Key Features
 
 - **Pre-configured for ML workloads**: Optimized for distributed training with Slurm scheduler
-- **High-performance storage**: FSx for Lustre (shared scratch) and OpenZFS (home directories)
+- **High-performance storage**: FSx for Lustre (high-throughput shared) and OpenZFS (home directories)
 - **Flexible compute options**: Support for On-Demand, On-Demand Capacity Reservations (ODCR), and Capacity Blocks for ML
 - **Advanced networking**: Elastic Fabric Adapter (EFA) support for multi-node training
 - **Custom AMI building**: Automated DLAMI creation with PCS agent, Slurm, Enroot, and Pyxis
@@ -30,18 +30,18 @@ The architecture includes:
 
 Deploy the complete PCS ML cluster with a single nested CloudFormation stack:
 
-[<kbd> <br> 1-Click Deploy Complete Cluster 🚀 <br> </kbd>](https://console.aws.amazon.com/cloudformation/home#/stacks/quickcreate?templateUrl=https://ws-assets-prod-iad-r-iad-ed304a55c2ca1aee.s3.us-east-1.amazonaws.com/2457970d-002f-4794-9e70-3610f2df74ac/pcs-ml-cluster-deploy-all.yaml&stackName=pcs-ml-cluster&param_S3BucketName=ws-assets-prod-iad-r-iad-ed304a55c2ca1aee&param_S3KeyPrefix=2457970d-002f-4794-9e70-3610f2df74ac/)
+[![Launch](images/launch-stack.svg)](https://console.aws.amazon.com/cloudformation/home#/stacks/quickcreate?templateUrl=https://ws-assets-prod-iad-r-iad-ed304a55c2ca1aee.s3.us-east-1.amazonaws.com/2457970d-002f-4794-9e70-3610f2df74ac/pcs-ml-cluster-deploy-all.yaml&stackName=pcs-ml-cluster&param_S3BucketName=ws-assets-prod-iad-r-iad-ed304a55c2ca1aee&param_S3KeyPrefix=2457970d-002f-4794-9e70-3610f2df74ac/)
 
 **What gets deployed:**
 - ✅ VPC with public/private subnets, NAT gateway, S3 endpoint
-- ✅ FSx for Lustre (high-performance shared storage)
+- ✅ FSx for Lustre (high-throughput shared storage)
 - ✅ FSx for OpenZFS (home directories)
-- ✅ Custom DLAMI with PCS agent and Slurm (optional)
+- ✅ Custom DLAMI with PCS agent and Slurm
 - ✅ AWS PCS cluster with Slurm scheduler
-- ✅ Login node group (m6i.4xlarge)
-- ✅ CPU compute node group (c6i.4xlarge)
+- ✅ Login node group (e.g., m6i.4xlarge)
+- ✅ CPU compute node group (e.g., c6i.4xlarge)
 - ⚙️ Additional on-demand GPU compute node group (optional, e.g., g5.12xlarge)
-- ⚙️ Additional capacity block P5 compute node group (optional, for P5.48xlarge)
+- ⚙️ Additional capacity block P5 compute node group (optional, e.g., p5.48xlarge)
 
 **Key Parameters:**
 - `PrimarySubnetAZ`: Availability Zone for deployment (required)
@@ -112,9 +112,7 @@ Standard instances with single network interface. Suitable for:
 
 **Recommended instance types:**
 - **CPU**: `c6i.32xlarge`, `c7i.48xlarge`, `c7a.48xlarge`
-- **GPU (Single NIC)**: `g5.12xlarge`, `g5.48xlarge`, `p4d.24xlarge`, `p4de.24xlarge`
-- **Trainium**: `trn1.32xlarge`, `trn1n.32xlarge`, `trn2.48xlarge`
-- **Inferentia**: `inf2.48xlarge`
+- **GPU (Single NIC)**: `g5.12xlarge`, `g6.12xlarge`
 
 ### 2. Multi Network Interface Instances (use `add-cng-p5.yaml`)
 High-performance instances with 16 or 32 EFA network interfaces. Required for:
@@ -122,28 +120,21 @@ High-performance instances with 16 or 32 EFA network interfaces. Required for:
 - Maximum inter-node bandwidth and low latency
 - Multi-node workloads requiring NVLink/NVSwitch
 
-**P5 Series (H100/H200):**
+**Instance Types (P-Series):**
 - `p5.48xlarge`: 8x NVIDIA H100 GPUs (32 EFA interfaces, 3.2 Tbps aggregate network bandwidth)
 - `p5e.48xlarge`: 8x NVIDIA H200 GPUs (32 EFA interfaces, 3.2 Tbps aggregate network bandwidth)
 - `p5en.48xlarge`: 8x NVIDIA H200 GPUs with NVSwitch (16 EFA interfaces, 3.2 Tbps aggregate network bandwidth)
-
-**P6 Series (Blackwell B200):**
 - `p6-b200.48xlarge`: 8x NVIDIA B200 GPUs (32 EFA interfaces)
 
-### 3. On-Demand Capacity Reservations (ODCR)
-Reserved capacity with on-demand flexibility:
-- Guaranteed capacity in specific AZ
-- No long-term commitment
-- Pay on-demand rates when using reserved capacity
-- Supports both single and multi-NIC instances
-
-### 4. Capacity Blocks for ML
-Time-bound GPU capacity reservations for P5/P6 instances:
-- Reserved for 1-14 days
-- Up to 64 instances per reservation
-- Ideal for scheduled large-scale training
-- Requires advance purchase
-- Use `add-cng-p5.yaml` with `CapacityReservationId` parameter
+**Purchase Options:**
+- On-Demand Capacity Reservations (ODCR): Reserved capacity with on-demand flexibility:
+  - Guaranteed capacity in specific AZ
+  - No long-term commitment
+  - Pay on-demand rates when using reserved capacity
+- Capacity Blocks for ML: Time-bound GPU capacity reservations for P5/P6 instances:
+  - Ideal for scheduled large-scale training
+  - Requires advance purchase
+  - Use `add-cng-p5.yaml` with `CapacityReservationId` parameter
 
 ---
 
