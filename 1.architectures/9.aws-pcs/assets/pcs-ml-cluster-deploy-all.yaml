@@ -371,7 +371,7 @@ Resources:
         AmiId: !If
           - BuildAMIEnabled
           - !GetAtt DLAMIStack.Outputs.DLAMIforPCSAmiId
-          - !Sub '{{resolve:ssm:/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-24.04/latest/ami-id}}'
+          - !Sub '{{resolve:ssm:/aws/service/pcs/ami/dlami-base-ubuntu2404/x86_64/latest/ami-id}}'
         LoginNodeInstanceType: !Ref LoginNodeInstanceType
         ComputeNodeInstanceType: !Ref ComputeNodeInstanceType
         FSxLustreFilesystemId: !GetAtt PrerequisitesStack.Outputs.FSxLustreFilesystemId
@@ -410,7 +410,7 @@ Resources:
         AmiId: !If
           - BuildAMIEnabled
           - !GetAtt DLAMIStack.Outputs.DLAMIforPCSAmiId
-          - !Sub '{{resolve:ssm:/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-24.04/latest/ami-id}}'
+          - !Sub '{{resolve:ssm:/aws/service/pcs/ami/dlami-base-ubuntu2404/x86_64/latest/ami-id}}'
         ClusterSecurityGroupId: !GetAtt PrerequisitesStack.Outputs.SecurityGroup
         IamProfileArn: !GetAtt ClusterStack.Outputs.InstanceProfileArn
         FSxLustreFilesystemId: !GetAtt PrerequisitesStack.Outputs.FSxLustreFilesystemId
@@ -446,7 +446,7 @@ Resources:
         AmiId: !If
           - BuildAMIEnabled
           - !GetAtt DLAMIStack.Outputs.DLAMIforPCSAmiId
-          - !Sub '{{resolve:ssm:/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-24.04/latest/ami-id}}'
+          - !Sub '{{resolve:ssm:/aws/service/pcs/ami/dlami-base-ubuntu2404/x86_64/latest/ami-id}}'
         ClusterSecurityGroupId: !GetAtt PrerequisitesStack.Outputs.SecurityGroup
         IamProfileArn: !GetAtt ClusterStack.Outputs.InstanceProfileArn
         FSxLustreFilesystemId: !GetAtt PrerequisitesStack.Outputs.FSxLustreFilesystemId
