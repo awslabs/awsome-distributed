@@ -164,11 +164,14 @@ The custom DLAMI built by `pcs-ready-dlami-with-enroot-pyxis.yaml` adds containe
 ### Example 1: Basic CPU Cluster (Default)
 
 ```bash
+# Set your availability zone
+AZ_ID=us-east-1a
+
 aws cloudformation create-stack \
   --stack-name cpu-cluster \
   --template-url https://awsome-distributed-ai.s3.amazonaws.com/templates/pcs-ml-cluster-deploy-all.yaml \
   --parameters \
-    ParameterKey=PrimarySubnetAZ,ParameterValue=us-east-1a \
+    ParameterKey=PrimarySubnetAZ,ParameterValue=${AZ_ID} \
   --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
 ```
 
@@ -179,11 +182,14 @@ This deploys:
 ### Example 2: GPU Cluster with G6 Instances (Single NIC)
 
 ```bash
+# Set your availability zone
+AZ_ID=us-east-1a
+
 aws cloudformation create-stack \
   --stack-name gpu-cluster \
   --template-url https://awsome-distributed-ai.s3.amazonaws.com/templates/pcs-ml-cluster-deploy-all.yaml \
   --parameters \
-    ParameterKey=PrimarySubnetAZ,ParameterValue=us-east-1a \
+    ParameterKey=PrimarySubnetAZ,ParameterValue=${AZ_ID} \
     ParameterKey=OnDemandCngName,ParameterValue=gpu-g6 \
     ParameterKey=OnDemandQueueName,ParameterValue=gpu-g6 \
     ParameterKey=OnDemandInstanceType,ParameterValue=g6.12xlarge \
@@ -196,11 +202,14 @@ This replaces the default cpu1 queue with a GPU queue (gpu-g6) using g6.12xlarge
 ### Example 3: P5 On-Demand Capacity Reservation (ODCR) Cluster (Multi NIC, Static)
 
 ```bash
+# Set your availability zone
+AZ_ID=us-east-1a
+
 aws cloudformation create-stack \
   --stack-name p5-odcr-cluster \
   --template-url https://awsome-distributed-ai.s3.amazonaws.com/templates/pcs-ml-cluster-deploy-all.yaml \
   --parameters \
-    ParameterKey=PrimarySubnetAZ,ParameterValue=us-east-1a \
+    ParameterKey=PrimarySubnetAZ,ParameterValue=${AZ_ID} \
     ParameterKey=DeployPseriesCNG,ParameterValue=true \
     ParameterKey=PseriesCngName,ParameterValue=p5-odcr \
     ParameterKey=PseriesQueueName,ParameterValue=p5-odcr \
@@ -214,14 +223,15 @@ aws cloudformation create-stack \
 ### Example 4: P5 Cluster with Capacity Blocks for ML (Multi NIC, Static)
 
 ```bash
-# First, purchase a capacity blocks for ml and get the reservation ID
+# Set your availability zone and capacity reservation ID
+AZ_ID=us-east-1a
 CAPACITY_RESERVATION_ID="cr-0a1b2c3d4e5f6g7h8"
 
 aws cloudformation create-stack \
   --stack-name p5-cb-cluster \
   --template-url https://awsome-distributed-ai.s3.amazonaws.com/templates/pcs-ml-cluster-deploy-all.yaml \
   --parameters \
-    ParameterKey=PrimarySubnetAZ,ParameterValue=us-east-1a \
+    ParameterKey=PrimarySubnetAZ,ParameterValue=${AZ_ID} \
     ParameterKey=DeployPseriesCNG,ParameterValue=true \
     ParameterKey=PseriesCngName,ParameterValue=p5-cb \
     ParameterKey=PseriesQueueName,ParameterValue=p5-cb \
