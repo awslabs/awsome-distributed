@@ -162,7 +162,7 @@ The custom DLAMI built by `pcs-ready-dlami-with-enroot-pyxis.yaml` adds containe
 
 ```bash
 aws cloudformation create-stack \
-  --stack-name cpu-training-cluster \
+  --stack-name cpu-cluster \
   --template-url https://awsome-distributed-ai.s3.amazonaws.com/templates/pcs-ml-cluster-deploy-all.yaml \
   --parameters \
     ParameterKey=PrimarySubnetAZ,ParameterValue=us-east-1a \
@@ -170,11 +170,11 @@ aws cloudformation create-stack \
   --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
 ```
 
-### Example 2: GPU Cluster with G5 Instances (Single NIC)
+### Example 2: GPU Cluster with GG Instances (Single NIC)
 
 ```bash
 aws cloudformation create-stack \
-  --stack-name gpu-training-cluster \
+  --stack-name gpu-cluster \
   --template-url https://awsome-distributed-ai.s3.amazonaws.com/templates/pcs-ml-cluster-deploy-all.yaml \
   --parameters \
     ParameterKey=PrimarySubnetAZ,ParameterValue=us-east-1a \
@@ -190,7 +190,7 @@ aws cloudformation create-stack \
 
 ```bash
 aws cloudformation create-stack \
-  --stack-name p5-ondemand-cluster \
+  --stack-name p5-cluster \
   --template-url https://awsome-distributed-ai.s3.amazonaws.com/templates/pcs-ml-cluster-deploy-all.yaml \
   --parameters \
     ParameterKey=PrimarySubnetAZ,ParameterValue=us-east-1a \
@@ -211,7 +211,7 @@ aws cloudformation create-stack \
 CAPACITY_RESERVATION_ID="cr-0a1b2c3d4e5f6g7h8"
 
 aws cloudformation create-stack \
-  --stack-name p5-capacity-block-cluster \
+  --stack-name p5-cluster \
   --template-url https://awsome-distributed-ai.s3.amazonaws.com/templates/pcs-ml-cluster-deploy-all.yaml \
   --parameters \
     ParameterKey=PrimarySubnetAZ,ParameterValue=us-east-1a \
