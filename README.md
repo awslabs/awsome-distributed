@@ -1,6 +1,6 @@
 # ML Training Reference Architectures & Tests <!-- omit from toc -->
 
-This repository contains reference architectures and test cases for distributed model training with [Amazon SageMaker HyperPod](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod.html), [AWS ParallelCluster](https://docs.aws.amazon.com/parallelcluster/latest/ug/what-is-aws-parallelcluster.html), [AWS Batch](https://docs.aws.amazon.com/batch/latest/userguide/what-is-batch.html), and [Amazon EKS](https://docs.aws.amazon.com/eks/latest/userguide/getting-started-console.html). The test cases cover different types and sizes of models as well as different frameworks and parallel optimizations (PyTorch DDP/FSDP, Megatron-LM, NeMo...).
+This repository contains reference architectures and test cases for distributed model training with [Amazon SageMaker HyperPod](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod.html), [AWS ParallelCluster](https://docs.aws.amazon.com/parallelcluster/latest/ug/what-is-aws-parallelcluster.html), [AWS Parallel Computing Service (PCS)](https://aws.amazon.com/pcs/), [AWS Batch](https://docs.aws.amazon.com/batch/latest/userguide/what-is-batch.html), and [Amazon EKS](https://docs.aws.amazon.com/eks/latest/userguide/getting-started-console.html). The test cases cover different types and sizes of models as well as different frameworks and parallel optimizations (PyTorch DDP/FSDP, Megatron-LM, NeMo...).
 
 The major components of this directory are:
 
@@ -46,7 +46,7 @@ Architectures are located in `1.architectures` and consist of utilities and serv
 | [`6.ldap_server`](./1.architectures/6.ldap_server)                             | Identity | LDAP server for multi-user cluster access            |
 | [`7.sagemaker-hyperpod-eks`](./1.architectures/7.sagemaker-hyperpod-eks)       | Compute  | SageMaker HyperPod with EKS orchestration            |
 | [`8.accounting-database`](./1.architectures/8.accounting-database)             | Tooling  | Accounting database for job tracking                 |
-| [`9.aws-pcs`](./1.architectures/9.aws-pcs)                                     | Compute  | Cluster templates for GPU & custom silicon training  |
+| [`9.aws-pcs`](./1.architectures/9.aws-pcs)                                     | Compute  | AWS Parallel Computing Service templates with Slurm scheduler |
 
 You will also find [documentation](./1.architectures/efa-cheatsheet.md) for EFA and the recommended environment variables.
 
