@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Complete AWS PCS ML Cluster deployment with nested stacks.

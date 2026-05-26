@@ -1,5 +1,7 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 AWSTemplateFormatVersion: '2010-09-09'
-# Transform: AWS::Serverless-2016-10-31
 Description: AWS PCS "Getting Started" cluster. 
   This template deploys a small HPC cluster with 1 login node and up to 4 compute nodes. Optionally, Slurm accounting can be enabled.
   It includes an EFS file system for shared storage and an FSx for Lustre file system for high-speed temporary storage.  
@@ -74,12 +76,12 @@ Parameters:
 
   LoginNodeInstanceType:
     Type: String
-    Description: Instance Type for Login Compute Node Group
+    Description: Instance Type for Login Node Group
     Default: "m6i.4xlarge"
 
   ComputeNodeInstanceType:
     Type: String
-    Description: Instance Type for Compute Compute Node Group
+    Description: Instance Type for Compute Node Group
     Default: "c6i.4xlarge"
 
   FSxLustreFilesystemId:
@@ -180,7 +182,7 @@ Resources:
             - rsync -aA --ignore-existing /tmp/home/ /home
             - rm -rf /tmp/home/
             # If provided, mount FSxL filesystem as /fsx
-            - if [ ! -z "${FSxLustreFilesystemId}" ]; then amazon-linux-extras install -y lustre=latest; mkdir -p /fsx; chmod a+rwx /fsx; mount -t lustre ${FSxLustreFilesystemId}.fsx.${AWS::Region}.amazonaws.com@tcp:/${FSxLustreFilesystemMountName} /fsx; chmod 777 /fsx; fi
+            - if [ ! -z "${FSxLustreFilesystemId}" ]; then mkdir -p /fsx; mount -t lustre ${FSxLustreFilesystemId}.fsx.${AWS::Region}.amazonaws.com@tcp:/${FSxLustreFilesystemMountName} /fsx; chmod 1777 /fsx; fi
 
             --==MYBOUNDARY==
 
@@ -221,7 +223,7 @@ Resources:
             - rsync -aA --ignore-existing /tmp/home/ /home
             - rm -rf /tmp/home/
             # If provided, mount FSxL filesystem as /fsx
-            - if [ ! -z "${FSxLustreFilesystemId}" ]; then amazon-linux-extras install -y lustre=latest; mkdir -p /fsx; chmod a+rwx /fsx; mount -t lustre ${FSxLustreFilesystemId}.fsx.${AWS::Region}.amazonaws.com@tcp:/${FSxLustreFilesystemMountName} /fsx; chmod 777 /fsx; fi
+            - if [ ! -z "${FSxLustreFilesystemId}" ]; then mkdir -p /fsx; mount -t lustre ${FSxLustreFilesystemId}.fsx.${AWS::Region}.amazonaws.com@tcp:/${FSxLustreFilesystemMountName} /fsx; chmod 1777 /fsx; fi
 
             --==MYBOUNDARY==
 

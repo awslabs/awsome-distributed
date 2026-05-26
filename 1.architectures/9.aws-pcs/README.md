@@ -2,6 +2,8 @@
 
 This repository provides reference architectures and deployment templates for setting up distributed training clusters using [AWS Parallel Computing Service (PCS)](https://aws.amazon.com/pcs/). These architectures are optimized for machine learning workloads and include configurations for high-performance computing instances (P and Trn EC2 families) with shared filesystems (FSx for Lustre and OpenZFS).
 
+> **Upstream Repository**: These templates are based on [aws-samples/aws-hpc-recipes](https://github.com/aws-samples/aws-hpc-recipes/tree/main/recipes/pcs), customized for ML workloads with container support (Enroot/Pyxis), simplified AMI building using PCS-ready base images, and updated Slurm versions (25.05/25.11). The templates in this repository are maintained independently and may diverge from the upstream recipes.
+
 ## Key Features
 
 - **Pre-configured for ML workloads**: Optimized for distributed training with Slurm scheduler
@@ -307,6 +309,28 @@ aws cloudformation delete-stack --stack-name pcs-ml-cluster
 ```
 
 **Note**: Nested stacks will be deleted automatically. Manual backups of data in FSx filesystems are recommended before deletion.
+
+---
+
+## Testing and Validation
+
+This architecture has been tested with the following configurations:
+
+**Infrastructure Templates:**
+- `ml-cluster-prerequisites.yaml`: Deployed and validated in multiple regions (us-east-1, us-west-2, us-east-2)
+- `cluster.yaml`: Tested with CPU compute nodes (c6i.4xlarge) and login nodes (m6i.4xlarge)
+- `add-cng.yaml`: Validated with G6 instances (g6.xlarge, g6.12xlarge)
+- `add-cng-p5.yaml`: Tested with P5 instances (p5.48xlarge, p5en.48xlarge) using both On-Demand Capacity Reservations and Capacity Blocks for ML
+
+**AMI Builder:**
+- `pcs-ready-dlami-with-enroot-pyxis.yaml`: Successfully built Ubuntu 24.04 x86_64 AMIs with Enroot 3.5.0 and Pyxis 0.20.0
+- Base image: PCS-ready DLAMI (`/aws/service/pcs/ami/dlami-base-ubuntu2404/x86_64/latest/ami-id`)
+- Enroot/Pyxis container runtime validated with PyTorch and CUDA containers
+
+**Workloads:**
+- Multi-node distributed training jobs tested on P5 instances
+- Container-based jobs verified using Slurm's Pyxis plugin
+- FSx for Lustre shared storage validated across compute nodes
 
 ---
 
