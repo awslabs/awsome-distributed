@@ -164,8 +164,6 @@ submitted_jobs*.txt
 topo_sorted_hostnames.txt
 micro-benchmarks/nccl-tests/slurm/topology-aware-nccl-tests/hostnames.txt
 *.patch
-# Exception: intentional patch files committed as part of the build process
-!**/docker/patches/*.patch
 micro-benchmarks/nccl-tests/slurm/find_bad_nodes/logs/analysis_summary_*.txt
 micro-benchmarks/nccl-tests/slurm/find_bad_nodes/logs/node_combinations_*.txt
 .testenv

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
-set -e
+set -euo pipefail
 
 echo "=== SageMaker Training Job ==="
 echo "Hostname: $(hostname)"
@@ -9,9 +9,19 @@ echo "Date: $(date)"
 nvidia-smi -L
 
 # === NCCL / Networking Configuration ===
-# Let NCCL auto-detect the best transport. On EFA-enabled instances (p4d, p5,
-# g6), NCCL will use EFA/RDMA. On instances without EFA, it falls back to TCP.
-# Do NOT set NCCL_SOCKET_IFNAME or NCCL_IB_DISABLE unless debugging.
+# Let NCCL pick the best transport. On EFA-capable instances with the EFA
+# userspace stack installed (we install it in the Dockerfile), NCCL uses EFA
+# for inter-node collectives. On instances without EFA it falls back to TCP
+# over the default interface.
+#
+# Caveat: on non-EFA instances, NCCL auto-detect may pick a non-eth0
+# interface (e.g. a CNI / docker bridge) and fail to reach peers with
+# "Connection refused". If that happens, set NCCL_SOCKET_IFNAME=eth0 here
+# or in the launcher's environment block.
+#
+# To force TCP (e.g. on a cluster where EFA is misconfigured), set:
+#   export NCCL_NET_PLUGIN=none
+#   export NCCL_SOCKET_IFNAME=eth0
 export NCCL_DEBUG=INFO
 
 # Isaac Sim base image sets NVIDIA_VISIBLE_DEVICES=void — override
@@ -33,7 +43,7 @@ export TORCHELASTIC_ERROR_FILE=/tmp/torch_elastic_error.json
 export ISAACLAB_INIT_LOCK=/tmp/isaaclab_init.lock
 
 echo "=== Network Interfaces ==="
-ip addr show eth0 | head -5
+(ip addr show eth0 2>/dev/null || ifconfig eth0 2>/dev/null || hostname -I 2>/dev/null || true) | head -5
 echo "=== /dev/shm ==="
 df -h /dev/shm
 echo ""
@@ -111,6 +121,16 @@ else
   RESUME_FLAG=""
 fi
 
+# MLflow run metadata (read by mlflow_isaaclab.py on rank 0). The hook is a
+# no-op when MLFLOW_TRACKING_URI is unset.
+if [ -n "${MLFLOW_TRACKING_URI:-}" ]; then
+  export MLFLOW_EXPERIMENT_NAME="${MLFLOW_EXPERIMENT_NAME:-isaaclab}"
+  # Point at the framework root; mlflow_isaaclab.finalize() walks it to find
+  # the most recently created run subdirectory (skrl renames the task in the
+  # path, so we cannot construct the per-run path from env vars upfront).
+  export MLFLOW_ARTIFACT_DIR="${MLFLOW_ARTIFACT_DIR:-/workspace/IsaacLab/logs/${FRAMEWORK:-skrl}}"
+fi
+
 /isaac-sim/python.sh -m torch.distributed.run \
   --nproc_per_node=$NPROC \
   --nnodes=$NNODES \
@@ -118,7 +138,7 @@ fi
   --rdzv_id=sm-isaaclab \
   --rdzv_backend=c10d \
   --rdzv_endpoint=$MASTER_HOST:$MASTER_PORT \
-  scripts/reinforcement_learning/skrl/train.py \
+  run_train.py \
   --distributed \
   --task=${TASK:-Isaac-Velocity-Rough-H1-v0} \
   --max_iterations=${MAX_ITERATIONS:-1000} \

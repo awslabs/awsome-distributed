@@ -55,7 +55,7 @@ spec:
                 --rdzv_id=isaaclab-job \
                 --rdzv_backend=c10d \
                 --rdzv_endpoint=$$MASTER_ADDR:$$MASTER_PORT \
-                scripts/reinforcement_learning/${FRAMEWORK}/train.py \
+                run_train.py \
                 --distributed \
                 --task=${TASK} \
                 --max_iterations=${MAX_ITERATIONS} \
@@ -75,6 +75,10 @@ spec:
               value: "all"
             - name: ISAACLAB_INIT_LOCK
               value: "/tmp/isaaclab_init.lock"
+            - name: ISAACLAB_TRAIN_SCRIPT
+              value: "/workspace/IsaacLab/scripts/reinforcement_learning/${FRAMEWORK}/train.py"
+            - name: MLFLOW_ARTIFACT_DIR
+              value: "${JOB_FSX_LOG_DIR}/${FRAMEWORK}"
             - name: MLFLOW_TRACKING_URI
               value: "${MLFLOW_TRACKING_URI}"
             - name: MLFLOW_EXPERIMENT_NAME
@@ -149,7 +153,7 @@ spec:
                 --rdzv_id=isaaclab-job \
                 --rdzv_backend=c10d \
                 --rdzv_endpoint=$$MASTER_ADDR:$$MASTER_PORT \
-                scripts/reinforcement_learning/${FRAMEWORK}/train.py \
+                run_train.py \
                 --distributed \
                 --task=${TASK} \
                 --max_iterations=${MAX_ITERATIONS} \
@@ -168,6 +172,10 @@ spec:
               value: "all"
             - name: ISAACLAB_INIT_LOCK
               value: "/tmp/isaaclab_init.lock"
+            - name: ISAACLAB_TRAIN_SCRIPT
+              value: "/workspace/IsaacLab/scripts/reinforcement_learning/${FRAMEWORK}/train.py"
+            - name: MLFLOW_ARTIFACT_DIR
+              value: "${JOB_FSX_LOG_DIR}/${FRAMEWORK}"
             - name: MLFLOW_TRACKING_URI
               value: "${MLFLOW_TRACKING_URI}"
             - name: MLFLOW_EXPERIMENT_NAME
