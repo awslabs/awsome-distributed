@@ -4,8 +4,9 @@
 EKS cluster using the [HyperPod Inference Operator](https://aws.amazon.com/blogs/architecture/unlock-efficient-model-deployment-simplified-inference-operator-setup-on-amazon-sagemaker-hyperpod/).
 
 This path uses the **AWS-managed vLLM Deep Learning Container** (`vllm:0.17-gpu-py312`)
-which is built `FROM docker.io/vllm/vllm-openai:v0.11.0` with EFA, NCCL, and security
-patches pre-baked. The behavior tracks upstream vLLM closely.
+with EFA, NCCL, and security patches pre-baked. The DLC tag `0.17-gpu-py312` corresponds
+to vLLM 0.17.1; the [`../kubernetes/`](../kubernetes/) path uses upstream
+`vllm/vllm-openai:v0.21.0` directly.
 
 For plain EKS clusters without HyperPod, or HyperPod Clusters without the Inference Operator, use the [`../kubernetes/`](../kubernetes/) path.
 

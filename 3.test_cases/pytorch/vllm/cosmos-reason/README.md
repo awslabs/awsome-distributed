@@ -70,7 +70,7 @@ This test case is parameterized via `${MODEL_ID}` in `env_vars.example`. Support
 
 | Model | Backbone | Min GPU memory | Recommended `--max-model-len` | Reasoning parser |
 |-------|----------|---------------|------------------------------|------------------|
-| **`nvidia/Cosmos-Reason1-7B`** (default for sm_8x GPUs) | Qwen2.5-VL | 24 GB (A10G/L4 OK) | 8192 (24 GB GPUs) / 32768 (40+ GB) | None — `<think>` is inline in `content` |
+| **`nvidia/Cosmos-Reason1-7B`** (default for sm_8x GPUs) | Qwen2.5-VL | 24 GB (A10G/L4 OK) | 24576 (24 GB GPUs) / 32768 (40+ GB) | None — `<think>` is inline in `content` |
 | **`nvidia/Cosmos-Reason2-2B`** | Qwen3-VL | 24 GB | 16384 | `--reasoning-parser qwen3` (separates `<think>` into `reasoning_content`) |
 | **`nvidia/Cosmos-Reason2-8B`** (default for sm_9x GPUs) | Qwen3-VL | 32 GB (L40S/H100/H200) | 16384 | `--reasoning-parser qwen3` |
 
@@ -198,10 +198,10 @@ python3 examples/image_vqa.py \
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `MODEL_ID` | `nvidia/Cosmos-Reason1-7B` | HF model ID. Override to `Cosmos-Reason2-8B` on L40S/H100. |
-| `IMAGE_TAG` (kubernetes) | `vllm/vllm-openai:v0.11.0` | Upstream vLLM container. Pin to a specific version, never `:latest`. |
+| `IMAGE_TAG` (kubernetes) | `vllm/vllm-openai:v0.21.0` | Upstream vLLM container. Pin to a specific version, never `:latest`. |
 | `IMAGE_TAG` (hyperpod-eks) | `vllm:0.17-gpu-py312` (AWS DLC) | AWS-managed vLLM DLC. ECR path: `763104351884.dkr.ecr.${AWS_REGION}.amazonaws.com/vllm:0.17-gpu-py312` |
 | `INSTANCE_TYPE` | `ml.g5.8xlarge` | A10G 24 GB. Other validated: `ml.g6.12xlarge` (4×L4), `ml.g6e.4xlarge` (1×L40S 48 GB). |
-| `MAX_MODEL_LEN` | `8192` | Reduce for tight VRAM, increase to 32768 on 40 GB+ GPUs. Cosmos Reason native context is 256K — must reduce for non-H100 hardware. |
+| `MAX_MODEL_LEN` | `24576` | Sized for video out-of-the-box on 24 GB GPUs. Reduce to `8192` if OOM during CUDA graph capture; increase to `32768` on 40 GB+ GPUs. Cosmos Reason native context is 256K — must reduce for non-H100 hardware. |
 | `GPU_MEMORY_UTILIZATION` | `0.92` | vLLM target memory headroom. Reduce to `0.85` if OOM during CUDA graph capture. |
 | `TENSOR_PARALLEL_SIZE` | `1` | Single GPU for 7B/2B. Set to `4` for 8B on g6.12xlarge (4× L4 24 GB). |
 | `NAMESPACE` | `default` | Kubernetes namespace |

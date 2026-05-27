@@ -35,8 +35,8 @@ export TLS_CERT_S3_URI="s3://hyperpod-tls-<id>/certs"
 
 # ---- Hardware sizing ----
 # Validated combinations (model | GPU | TP | max-model-len):
-#   Cosmos-Reason1-7B  | A10G 24G   | TP=1 | 8192
-#   Cosmos-Reason1-7B  | L4  24G    | TP=1 | 8192
+#   Cosmos-Reason1-7B  | A10G 24G   | TP=1 | 24576 (reduce to 8192 if OOM during CUDA graph capture)
+#   Cosmos-Reason1-7B  | L4  24G    | TP=1 | 24576 (reduce to 8192 if OOM during CUDA graph capture)
 #   Cosmos-Reason1-7B  | L40S 48G   | TP=1 | 32768
 #   Cosmos-Reason2-2B  | A10G/L4    | TP=1 | 16384
 #   Cosmos-Reason2-8B  | L40S 48G   | TP=1 | 16384
@@ -45,26 +45,18 @@ export TLS_CERT_S3_URI="s3://hyperpod-tls-<id>/certs"
 export INSTANCE_TYPE="g5.8xlarge"
 export HYPERPOD_INSTANCE_TYPE="ml.${INSTANCE_TYPE}"
 export TENSOR_PARALLEL_SIZE="1"
-export MAX_MODEL_LEN="8192"
+export MAX_MODEL_LEN="24576"
 export GPU_MEMORY_UTILIZATION="0.92"
 
 # ---- vLLM serving args ----
 # DTYPE: bfloat16 is the only NVIDIA-tested precision for Cosmos Reason
 export DTYPE="bfloat16"
 
-# REASONING_PARSER: required for Cosmos-Reason2-* (Qwen3-VL) to separate <think>...</think>
-# traces into the response's `reasoning_content` field. Leave empty for Reason1 (Qwen2.5-VL)
-# — the model emits <think> inline in `content`.
-# For Reason2: REASONING_PARSER="--reasoning-parser qwen3"
-# For Reason1: REASONING_PARSER=""
-export REASONING_PARSER=""
-
-# Video / multimodal kwargs — recommended for Reason2; harmless for Reason1.
-# For Reason2 (set MEDIA_IO_KWARGS to enable video reasoning):
-#   MEDIA_IO_KWARGS='--media-io-kwargs {"video":{"num_frames":-1}}'
-# For Reason1 (use limit-mm-per-prompt instead):
-#   MEDIA_IO_KWARGS='--limit-mm-per-prompt {"image":10,"video":10}'
-export MEDIA_IO_KWARGS=""
+# ---- Reason2 (Qwen3-VL) vLLM args ----
+# If deploying Cosmos-Reason2-*, you must manually edit the deployment manifest:
+#   kubernetes/deployment.yaml: uncomment the --reasoning-parser and --media-io-kwargs lines
+#   hyperpod-eks/endpoint.yaml: uncomment the --reasoning-parser and SM_VLLM_REASONING_PARSER lines
+# See the Troubleshooting section in README.md for details.
 
 # ---- Endpoint defaults ----
 export ENDPOINT_NAME="cosmos-reason"

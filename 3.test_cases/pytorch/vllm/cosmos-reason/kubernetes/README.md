@@ -1,7 +1,7 @@
 # Cosmos Reason on Vanilla EKS
 
-Plain Kubernetes `Deployment` + `Service` + `HorizontalPodAutoscaler` for any EKS cluster
-with GPU nodes. Uses the upstream `vllm/vllm-openai` container image directly.
+Plain Kubernetes `Deployment` + `Service` for any EKS cluster with GPU nodes.
+Uses the upstream `vllm/vllm-openai` container image directly.
 
 If you have HyperPod EKS and want managed scale-to-zero, KV cache, and intelligent
 routing, use the [`../hyperpod-eks/`](../hyperpod-eks/) path instead.
@@ -10,7 +10,7 @@ routing, use the [`../hyperpod-eks/`](../hyperpod-eks/) path instead.
 
 | File | Purpose |
 |------|---------|
-| `deployment.yaml` | `Deployment` (pod spec) + `Service` (ClusterIP) + `HorizontalPodAutoscaler` |
+| `deployment.yaml` | `Deployment` (pod spec) + `Service` (ClusterIP) |
 | `hf-token-secret.yaml.example` | Reference manifest — recommended path is `kubectl create secret` rather than apply (so the token never lands in version control) |
 
 ## Prerequisites

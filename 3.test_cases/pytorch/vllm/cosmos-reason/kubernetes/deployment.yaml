@@ -70,10 +70,12 @@ spec:
             - '{"video":2,"image":10}'
             - "--mm-processor-kwargs"
             - '{"max_pixels":20000000,"fps":1.0}'
-            # Optional flags injected from env_vars — leave empty in env file
-            # if not applicable to the chosen model. envsubst will collapse them.
-            # ${REASONING_PARSER}
-            # ${MEDIA_IO_KWARGS}
+            # For Cosmos-Reason2 (Qwen3-VL), uncomment the following two args:
+            # - "--reasoning-parser"
+            # - "qwen3"
+            # For Reason2 video reasoning, uncomment:
+            # - "--media-io-kwargs"
+            # - '{"video":{"num_frames":-1}}'
           env:
             - name: HF_TOKEN
               valueFrom:
