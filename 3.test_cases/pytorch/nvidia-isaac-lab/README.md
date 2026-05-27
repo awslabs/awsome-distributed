@@ -39,6 +39,8 @@ To run distributed Isaac Lab training, you need:
 
 Cluster creation instructions can be found in the [SageMaker HyperPod EKS Workshop](https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/eks-orchestration/getting-started).
 
+> **EFA:** The container image includes the AWS EFA userspace stack (libfabric + aws-ofi-nccl). On EFA-capable instances (`ml.g6.12xlarge` and above, `ml.g6e`, `ml.p4d`, `ml.p5`), NCCL automatically uses EFA for inter-node collectives. No additional configuration is required.
+
 ## 1. Build Container Image
 
 From the repository root, build a container image based on `nvcr.io/nvidia/isaac-sim:5.1.0` with Isaac Lab v2.3.2 and the training scripts:
@@ -178,12 +180,7 @@ kubectl delete -f generated/viz-eks-webrtc-pod.yaml
 
 ## MLflow Integration (Optional)
 
-The Dockerfile applies `docker/patches/mlflow-train.patch` to mirror TensorBoard scalars to MLflow on rank 0. This is enabled when `MLFLOW_TRACKING_URI` is set; it's a no-op otherwise.
-
-**Design:**
-- Monkey-patches `SummaryWriter.add_scalar` to queue metrics into a background thread
-- Flushes batches of up to 1000 metrics via `MlflowClient.log_batch` every 2 seconds
-- Overhead: ~5 seconds on a 87-second baseline (vs 10+ minutes with per-metric `log_metric`)
+MLflow integration is implemented as a runtime hook (`scripts/mlflow_isaaclab.py`) invoked by `scripts/run_train.py` before Isaac Lab's `train.py` runs. It monkey-patches `SummaryWriter.add_scalar` to mirror metrics to a background thread that flushes batches via `MlflowClient.log_batch` every 2 seconds. Enabled when `MLFLOW_TRACKING_URI` is set; no-op otherwise.
 
 **Configuration:**
 
@@ -204,8 +201,9 @@ mlflow:
 |------|---------|
 | `generate.py` | Config-driven manifest generator (Python `string.Template`) |
 | `config.yaml.example` | Configuration template with all options documented |
-| `docker/Dockerfile` | Isaac Sim 5.1.0 + Isaac Lab v2.3.2 + training dependencies |
-| `docker/patches/mlflow-train.patch` | MLflow batched metric logging patch for skrl's `train.py` |
+| `docker/Dockerfile` | Isaac Sim 5.1.0 + Isaac Lab v2.3.2 + training dependencies + AWS EFA stack |
+| `scripts/mlflow_isaaclab.py` | MLflow runtime hook: patches SummaryWriter + argparse, batched log_batch |
+| `scripts/run_train.py` | Entrypoint shim: installs MLflow hook then runs train.py via runpy |
 | `scripts/sm-train-entrypoint.sh` | SageMaker BYOC entrypoint (parses `resourceconfig.json`, launches `torchrun`) |
 | `templates/*.tpl` | Kubernetes manifest and Python script templates |
 | `viz-scripts/` | DCV visualization helpers for EC2 workshop path |
