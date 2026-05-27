@@ -1,0 +1,139 @@
+# Single-node unified pod for DeepSeek-V3 — baseline comparison config.
+#
+# No NIXL, no proxy. Use this to measure the 1-node ceiling before
+# committing to disaggregation. UCCL-EP `deepep_low_latency` is the right
+# backend here: this is the same kernel decode pods use.
+#
+# Apply with: envsubst < manifests/unified.yaml | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dsv3-unified
+  namespace: ${NAMESPACE}
+  labels:
+    app: dsv3-disagg
+    role: unified
+spec:
+  restartPolicy: Never
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  enableServiceLinks: false
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values:
+                  - ${INSTANCE_TYPE}
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                  - ${PREFILL_NODE}
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+    - key: vpc.amazonaws.com/efa
+      operator: Exists
+      effect: NoSchedule
+    - key: sagemaker.amazonaws.com/node-health-status
+      operator: Exists
+      effect: NoSchedule
+  volumes:
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 120Gi
+    - name: model-cache
+      hostPath:
+        path: /mnt/k8s-disks/0
+        type: DirectoryOrCreate
+  containers:
+    - name: vllm
+      image: ${REGISTRY}${IMAGE}:${TAG}
+      securityContext:
+        privileged: true
+      env:
+        - name: VLLM_ENGINE_READY_TIMEOUT_S
+          value: "14400"
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token
+              key: HF_TOKEN
+              optional: true
+        - name: HF_HOME
+          value: /mnt/k8s-disks/0/local_scratch/hf_cache
+        - name: VLLM_LOGGING_LEVEL
+          value: INFO
+        - name: VLLM_WORKER_MULTIPROC_METHOD
+          value: spawn
+        - name: VLLM_USE_DEEP_GEMM
+          value: "1"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: NCCL_TIMEOUT
+          value: "7200000"
+        - name: TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC
+          value: "7200"
+        - name: FI_PROVIDER
+          value: "efa"
+        - name: FI_EFA_USE_DEVICE_RDMA
+          value: "1"
+        - name: FI_EFA_FORK_SAFE
+          value: "1"
+        - name: UCCL_SOCKET_IFNAME
+          value: "^lo,docker0,veth_def_agent"
+        - name: NCCL_DEBUG
+          value: "WARN"
+      resources:
+        requests:
+          cpu: "64"
+          memory: "400Gi"
+          nvidia.com/gpu: "8"
+          vpc.amazonaws.com/efa: "16"
+        limits:
+          cpu: "192"
+          memory: "1000Gi"
+          nvidia.com/gpu: "8"
+          vpc.amazonaws.com/efa: "16"
+      volumeMounts:
+        - name: dshm
+          mountPath: /dev/shm
+        - name: model-cache
+          mountPath: /mnt/k8s-disks/0
+      command:
+        - bash
+        - -c
+        - |
+          set -euo pipefail
+
+          echo "=== DSv3 UNIFIED (TP=${TENSOR_PARALLEL_SIZE}, DP=${DATA_PARALLEL_SIZE}, EP=8, ${DECODE_BACKEND}) ==="
+          MY_IP=$(hostname -I | awk '{print $1}')
+          IFACE=$(ip -o -4 addr show | grep "$MY_IP" | awk '{print $2}' | head -1)
+          export GLOO_SOCKET_IFNAME=$IFACE
+          export NCCL_SOCKET_IFNAME=$IFACE
+
+          ls /dev/infiniband/ 2>/dev/null | wc -l || echo "no EFA"
+          nvidia-smi -L
+
+          mkdir -p /mnt/k8s-disks/0/local_scratch/hf_cache/hub
+
+          exec vllm serve "${MODEL}" \
+            --trust-remote-code \
+            --tensor-parallel-size ${TENSOR_PARALLEL_SIZE} \
+            --data-parallel-size ${DATA_PARALLEL_SIZE} \
+            --data-parallel-size-local ${DATA_PARALLEL_SIZE} \
+            --data-parallel-address "$MY_IP" \
+            --data-parallel-rpc-port 13390 \
+            --api-server-count 2 \
+            --enable-expert-parallel \
+            --all2all-backend ${DECODE_BACKEND} \
+            --enable-chunked-prefill \
+            --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION} \
+            --max-model-len ${MAX_MODEL_LEN} \
+            --num-gpu-blocks-override ${NUM_GPU_BLOCKS_OVERRIDE} \
+            --host 0.0.0.0 \
+            --port 8000

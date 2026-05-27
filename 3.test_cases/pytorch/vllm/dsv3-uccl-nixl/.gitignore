@@ -1,0 +1,5 @@
+# Local env vars contain HF token and account ID — never commit them.
+setup/env_vars
+
+# Benchmark outputs.
+results/

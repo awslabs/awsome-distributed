@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+#
+# Example env_vars for the DeepSeek-V3 disaggregated vLLM + UCCL-EP + NIXL
+# sample. Copy this to setup/env_vars and fill in your values.
+#
+#   cp setup/env_vars.example setup/env_vars
+#   $EDITOR setup/env_vars
+#   source setup/env_vars
+#
+# Never commit setup/env_vars — it contains your HF token and account ID.
+#
+# ---------------------------------------------------------------------------
+# AWS / ECR
+# ---------------------------------------------------------------------------
+export AWS_REGION="$(aws ec2 describe-availability-zones --output text --query 'AvailabilityZones[0].[RegionName]')"
+export ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+export REGISTRY="${ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/"
+export IMAGE="vllm-uccl-ep"
+export TAG="vllm0.21.0-uccl-0dc87eb-cu13"
+
+# ---------------------------------------------------------------------------
+# Cluster
+# ---------------------------------------------------------------------------
+export EKS_CLUSTER_NAME="<your-eks-cluster-name>"
+export NAMESPACE="dsv3-disagg"
+export INSTANCE_TYPE="p5en.48xlarge"
+export NUM_GPU_PER_NODE=8
+export NUM_EFA_PER_NODE=16
+
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
+export MODEL="deepseek-ai/DeepSeek-V3-0324"
+export HF_TOKEN="<hf_your_token_here>"
+
+# ---------------------------------------------------------------------------
+# Topology — fill in node hostnames and internal IPs
+#
+# Discover with:
+#   kubectl get nodes -l node.kubernetes.io/instance-type=$INSTANCE_TYPE \
+#     -o custom-columns="NAME:.metadata.name,IP:.status.addresses[?(@.type=='InternalIP')].address" \
+#     --no-headers
+#
+# Provide as many DECODE_NODE_<i> / DECODE_<i>_IP pairs as your topology
+# needs (1p1d → just DECODE_NODE_0, 1p4d → DECODE_NODE_0..3, etc).
+# ---------------------------------------------------------------------------
+export PREFILL_NODE="ip-10-0-0-1.${AWS_REGION}.compute.internal"
+export PREFILL_IP="10.0.0.1"
+
+export DECODE_NODE_0="ip-10-0-0-2.${AWS_REGION}.compute.internal"
+export DECODE_0_IP="10.0.0.2"
+
+export DECODE_NODE_1="ip-10-0-0-3.${AWS_REGION}.compute.internal"
+export DECODE_1_IP="10.0.0.3"
+
+export DECODE_NODE_2="ip-10-0-0-4.${AWS_REGION}.compute.internal"
+export DECODE_2_IP="10.0.0.4"
+
+export DECODE_NODE_3="ip-10-0-0-5.${AWS_REGION}.compute.internal"
+export DECODE_3_IP="10.0.0.5"
+
+export DECODE_NODE_4="ip-10-0-0-6.${AWS_REGION}.compute.internal"
+export DECODE_4_IP="10.0.0.6"
+
+# ---------------------------------------------------------------------------
+# vLLM serve flags (tweak only if you change hardware)
+# ---------------------------------------------------------------------------
+export TENSOR_PARALLEL_SIZE=4
+export DATA_PARALLEL_SIZE=2
+export GPU_MEMORY_UTILIZATION=0.80
+export MAX_MODEL_LEN=8192
+export NUM_GPU_BLOCKS_OVERRIDE=30000
+export PREFILL_BACKEND="deepep_high_throughput"
+export DECODE_BACKEND="deepep_low_latency"

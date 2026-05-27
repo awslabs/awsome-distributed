@@ -1,0 +1,76 @@
+# NIXL routing proxy for DeepSeek-V3 disaggregated inference.
+#
+# Routes /v1/* requests:
+#   - prefill phase → ${PREFILL_IP}:8100
+#   - decode phase  → round-robin over ${DECODER_HOSTS} on port 8200
+#
+# DECODER_HOSTS / DECODER_PORTS are space-separated lists rendered by
+# recipe/deploy.sh based on the chosen topology.
+#
+# Apply with (typically via recipe/deploy.sh):
+#   envsubst < manifests/proxy.yaml | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dsv3-proxy
+  namespace: ${NAMESPACE}
+  labels:
+    app: dsv3-disagg
+    role: proxy
+spec:
+  restartPolicy: Never
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  enableServiceLinks: false
+  nodeSelector:
+    kubernetes.io/hostname: ${PREFILL_NODE}
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+    - key: vpc.amazonaws.com/efa
+      operator: Exists
+      effect: NoSchedule
+    - key: sagemaker.amazonaws.com/node-health-status
+      operator: Exists
+      effect: NoSchedule
+  containers:
+    - name: proxy
+      image: ${REGISTRY}${IMAGE}:${TAG}
+      env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+      resources:
+        requests:
+          cpu: "4"
+          memory: "8Gi"
+        limits:
+          cpu: "8"
+          memory: "16Gi"
+      command:
+        - bash
+        - -c
+        - |
+          set -euo pipefail
+
+          echo "=== DSv3 PROXY ==="
+          echo "Prefill: ${PREFILL_IP}:8100"
+          echo "Decode:  ${DECODER_HOSTS} (port 8200 each)"
+
+          for endpoint in "${PREFILL_IP}:8100" $(for h in ${DECODER_HOSTS}; do echo "$h:8200"; done); do
+            echo "Waiting for $endpoint..."
+            until curl -sf "http://${endpoint}/health" >/dev/null 2>&1; do
+              sleep 10
+              echo "  still waiting for $endpoint..."
+            done
+            echo "  $endpoint is ready!"
+          done
+          echo "All instances ready!"
+
+          exec python3 /opt/vllm/tests/v1/kv_connector/nixl_integration/toy_proxy_server.py \
+            --host 0.0.0.0 \
+            --port 8000 \
+            --prefiller-hosts ${PREFILL_IP} \
+            --prefiller-ports 8100 \
+            --decoder-hosts ${DECODER_HOSTS} \
+            --decoder-ports ${DECODER_PORTS}

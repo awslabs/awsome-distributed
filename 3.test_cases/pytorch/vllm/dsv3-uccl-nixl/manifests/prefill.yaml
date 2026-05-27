@@ -1,0 +1,156 @@
+# Prefill pod for DeepSeek-V3 disaggregated inference.
+#
+# Per-node parallelism:
+#   - tensor-parallel-size 4 + data-parallel-size 2 → 8 GPUs per pod
+#   - expert-parallel: enabled, EP=8 (TP×DP)
+#   - all2all-backend: deepep_high_throughput (best for MoE under prefill bursts)
+#
+# KV transfer:
+#   - NixlConnector + LIBFABRIC backend, side-channel on port 5600 (host network)
+#
+# Apply with: envsubst < manifests/prefill.yaml | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dsv3-prefill-0
+  namespace: ${NAMESPACE}
+  labels:
+    app: dsv3-disagg
+    role: prefill
+spec:
+  restartPolicy: Never
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  enableServiceLinks: false
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values:
+                  - ${INSTANCE_TYPE}
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                  - ${PREFILL_NODE}
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app: dsv3-disagg
+          topologyKey: kubernetes.io/hostname
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+    - key: vpc.amazonaws.com/efa
+      operator: Exists
+      effect: NoSchedule
+    - key: sagemaker.amazonaws.com/node-health-status
+      operator: Exists
+      effect: NoSchedule
+  volumes:
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 120Gi
+    - name: model-cache
+      hostPath:
+        path: /mnt/k8s-disks/0
+        type: DirectoryOrCreate
+  containers:
+    - name: vllm
+      image: ${REGISTRY}${IMAGE}:${TAG}
+      securityContext:
+        privileged: true
+      env:
+        - name: VLLM_ENGINE_READY_TIMEOUT_S
+          value: "14400"
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token
+              key: HF_TOKEN
+              optional: true
+        - name: HF_HOME
+          value: /mnt/k8s-disks/0/local_scratch/hf_cache
+        - name: VLLM_LOGGING_LEVEL
+          value: INFO
+        - name: VLLM_WORKER_MULTIPROC_METHOD
+          value: spawn
+        - name: VLLM_USE_DEEP_GEMM
+          value: "1"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: NCCL_TIMEOUT
+          value: "7200000"
+        - name: TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC
+          value: "7200"
+        - name: FI_PROVIDER
+          value: "efa"
+        - name: FI_EFA_USE_DEVICE_RDMA
+          value: "1"
+        - name: FI_EFA_FORK_SAFE
+          value: "1"
+        - name: UCCL_SOCKET_IFNAME
+          value: "^lo,docker0,veth_def_agent"
+        - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+          value: "5600"
+        - name: NCCL_DEBUG
+          value: "WARN"
+      resources:
+        requests:
+          cpu: "64"
+          memory: "400Gi"
+          nvidia.com/gpu: "8"
+          vpc.amazonaws.com/efa: "16"
+        limits:
+          cpu: "192"
+          memory: "1000Gi"
+          nvidia.com/gpu: "8"
+          vpc.amazonaws.com/efa: "16"
+      volumeMounts:
+        - name: dshm
+          mountPath: /dev/shm
+        - name: model-cache
+          mountPath: /mnt/k8s-disks/0
+      command:
+        - bash
+        - -c
+        - |
+          set -euo pipefail
+
+          echo "=== DSv3 PREFILL (TP=${TENSOR_PARALLEL_SIZE}, DP=${DATA_PARALLEL_SIZE}, EP=8, ${PREFILL_BACKEND}, NixlConnector) ==="
+          MY_IP=$(hostname -I | awk '{print $1}')
+          echo "MY_IP: $MY_IP"
+
+          IFACE=$(ip -o -4 addr show | grep "$MY_IP" | awk '{print $2}' | head -1)
+          export GLOO_SOCKET_IFNAME=$IFACE
+          export NCCL_SOCKET_IFNAME=$IFACE
+          export VLLM_NIXL_SIDE_CHANNEL_HOST=$MY_IP
+
+          echo "=== EFA devices ==="
+          ls /dev/infiniband/ 2>/dev/null | wc -l || echo "no EFA"
+          nvidia-smi -L
+
+          mkdir -p /mnt/k8s-disks/0/local_scratch/hf_cache/hub
+
+          exec vllm serve "${MODEL}" \
+            --trust-remote-code \
+            --tensor-parallel-size ${TENSOR_PARALLEL_SIZE} \
+            --data-parallel-size ${DATA_PARALLEL_SIZE} \
+            --data-parallel-size-local ${DATA_PARALLEL_SIZE} \
+            --data-parallel-address "$MY_IP" \
+            --data-parallel-rpc-port 13390 \
+            --api-server-count 2 \
+            --enable-expert-parallel \
+            --all2all-backend ${PREFILL_BACKEND} \
+            --enable-chunked-prefill \
+            --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION} \
+            --max-model-len ${MAX_MODEL_LEN} \
+            --num-gpu-blocks-override ${NUM_GPU_BLOCKS_OVERRIDE} \
+            --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_connector_extra_config":{"backends":["LIBFABRIC"]}}' \
+            --host 0.0.0.0 \
+            --port 8100
