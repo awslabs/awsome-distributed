@@ -92,12 +92,17 @@ spec:
             resources:
               limits:
                 nvidia.com/gpu: ${JOB_GPUS}
+                vpc.amazonaws.com/efa: ${JOB_EFA_PER_NODE}
                 memory: "${JOB_MEM_LIMIT}"
                 cpu: "${JOB_CPU_LIMIT}"
               requests:
                 nvidia.com/gpu: ${JOB_GPUS}
+                vpc.amazonaws.com/efa: ${JOB_EFA_PER_NODE}
                 memory: "${JOB_MEM_REQUEST}"
                 cpu: "${JOB_CPU_REQUEST}"
+            securityContext:
+              capabilities:
+                add: ["IPC_LOCK"]
             volumeMounts:
             - name: fsx
               mountPath: /fsx
@@ -189,12 +194,17 @@ spec:
             resources:
               limits:
                 nvidia.com/gpu: ${JOB_GPUS}
+                vpc.amazonaws.com/efa: ${JOB_EFA_PER_NODE}
                 memory: "${JOB_MEM_LIMIT}"
                 cpu: "${JOB_CPU_LIMIT}"
               requests:
                 nvidia.com/gpu: ${JOB_GPUS}
+                vpc.amazonaws.com/efa: ${JOB_EFA_PER_NODE}
                 memory: "${JOB_MEM_REQUEST}"
                 cpu: "${JOB_CPU_REQUEST}"
+            securityContext:
+              capabilities:
+                add: ["IPC_LOCK"]
             volumeMounts:
             - name: fsx
               mountPath: /fsx
