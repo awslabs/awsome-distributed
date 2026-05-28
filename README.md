@@ -45,7 +45,7 @@ Architectures are located in `1.architectures` and consist of utilities and serv
 | [`6.ldap_server`](./1.architectures/6.ldap_server)                             | Identity | LDAP server for multi-user cluster access            |
 | [`7.sagemaker-hyperpod-eks`](./1.architectures/7.sagemaker-hyperpod-eks)       | Compute  | SageMaker HyperPod with EKS orchestration            |
 | [`8.accounting-database`](./1.architectures/8.accounting-database)             | Tooling  | Accounting database for job tracking                 |
-| [`9.aws-pcs`](./1.architectures/9.aws-pcs)                                     | Compute  | AWS Parallel Computing Service templates with Slurm scheduler |
+| [`aws-pcs`](./architectures/aws-pcs)                                           | Compute  | AWS Parallel Computing Service templates with Slurm scheduler |
 
 You will also find [documentation](./1.architectures/efa-cheatsheet.md) for EFA and the recommended environment variables.
 
