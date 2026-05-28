@@ -217,11 +217,10 @@ Resources:
                       STABLE=1
                       ENROOT_RELEASE=3.5.0
                       PYXIS_RELEASE=v0.20.0
-                      SLURM_VERSION=25.11
-                      SLURM_PATH="/opt/aws/pcs/scheduler/slurm-${SLURM_VERSION}"
-                      SLURM_ETC_PATH="/etc/aws/pcs/scheduler/slurm-${SLURM_VERSION}"
+                      # Install Pyxis for both Slurm versions supported by PCS
+                      SLURM_VERSIONS="25.05 25.11"
 
-                      echo "Installing Enroot ${ENROOT_RELEASE} and Pyxis ${PYXIS_RELEASE} for Slurm ${SLURM_VERSION}"
+                      echo "Installing Enroot ${ENROOT_RELEASE} and Pyxis ${PYXIS_RELEASE} for Slurm versions: ${SLURM_VERSIONS}"
 
                       ########
                       # ENROOT
@@ -280,16 +279,30 @@ Resources:
                       ########
                       # PYXIS
                       ########
-                      git clone --depth 1 --branch ${PYXIS_RELEASE} https://github.com/NVIDIA/pyxis.git /tmp/pyxis
-                      cd /tmp/pyxis
-                      CPPFLAGS="-I ${SLURM_PATH}/include/" make
-                      CPPFLAGS="-I ${SLURM_PATH}/include/" make install
+                      # Install Pyxis for all supported Slurm versions
+                      for SLURM_VERSION in ${SLURM_VERSIONS}; do
+                        echo "Installing Pyxis for Slurm ${SLURM_VERSION}"
+                        SLURM_PATH="/opt/aws/pcs/scheduler/slurm-${SLURM_VERSION}"
+                        SLURM_ETC_PATH="/etc/aws/pcs/scheduler/slurm-${SLURM_VERSION}"
 
-                      mkdir -p ${SLURM_ETC_PATH}/plugstack.conf.d
-                      ln -fs /usr/local/share/pyxis/pyxis.conf ${SLURM_ETC_PATH}/plugstack.conf.d/pyxis.conf
+                        # Clone Pyxis (only once)
+                        if [ ! -d /tmp/pyxis ]; then
+                          git clone --depth 1 --branch ${PYXIS_RELEASE} https://github.com/NVIDIA/pyxis.git /tmp/pyxis
+                        fi
 
-                      # Add path for slurm commands
-                      echo "PATH=${SLURM_PATH}/bin:/usr/lib/ccache/bin:/usr/local/bin:/usr/bin:/bin" >> /etc/default/slurmd
+                        cd /tmp/pyxis
+                        make clean || true
+                        CPPFLAGS="-I ${SLURM_PATH}/include/" make
+                        CPPFLAGS="-I ${SLURM_PATH}/include/" make install
+
+                        mkdir -p ${SLURM_ETC_PATH}/plugstack.conf.d
+                        ln -fs /usr/local/share/pyxis/pyxis.conf ${SLURM_ETC_PATH}/plugstack.conf.d/pyxis.conf
+
+                        echo "Pyxis installed for Slurm ${SLURM_VERSION}"
+                      done
+
+                      # Add path for slurm commands (using the latest version as default)
+                      echo "PATH=/opt/aws/pcs/scheduler/slurm-25.11/bin:/usr/lib/ccache/bin:/usr/local/bin:/usr/bin:/bin" >> /etc/default/slurmd
 
                       ########
                       # GPU

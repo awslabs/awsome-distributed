@@ -24,7 +24,6 @@ You can follow the workshops below to train models on AWS. Each contains example
 | [AWS ParallelCluster](https://catalog.workshops.aws/ml-on-aws-parallelcluster)     | Similar workshop as HyperPod but on ParallelCluster             |
 | [AWS Parallel Computing Service](https://catalog.workshops.aws/ml-on-pcs)     | Similar workshop as HyperPod but on AWS Parallel Computing Service             |
 
-
 ## Blog
 
 Posts about distributed ML training on AWS are published at <https://awslabs.github.io/awsome-distributed/>. The Hugo source lives on the [`content`](https://github.com/awslabs/awsome-distributed/tree/content) branch.

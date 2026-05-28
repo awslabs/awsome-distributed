@@ -39,6 +39,7 @@ Deploy the complete PCS ML cluster with a single nested CloudFormation stack:
 - ✅ FSx for Lustre (high-throughput shared storage)
 - ✅ FSx for OpenZFS (home directories)
 - ✅ Custom DLAMI with PCS agent and Slurm (optional, enabled by default)
+  - **Note**: AMI build takes ~30 minutes via EC2 Image Builder; cluster creation blocks until complete
 - ✅ AWS PCS cluster with Slurm scheduler
 - ✅ Login node group (m6i.4xlarge)
 - ✅ CPU compute node group - cpu1 queue (c6i.4xlarge, enabled by default)

@@ -301,7 +301,7 @@ Parameters:
 
   PseriesMinCount:
     Type: Number
-    Description: Minimum number of instances for multi-NIC compute node group (must be 0 for dynamic scaling)
+    Description: Minimum number of instances for multi-NIC compute node group (set to 0 for dynamic scaling with On-Demand, or match reserved capacity count for ODCR/Capacity Blocks)
     Default: 4
     MinValue: 0
 
