@@ -1,0 +1,165 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd
+spec:
+  ports:
+    - name: etcd-client-port
+      port: 2379
+      protocol: TCP
+      targetPort: 2379
+  selector:
+    app: etcd
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: etcd
+  name: etcd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: etcd
+  template:
+    metadata:
+      labels:
+        app: etcd
+    spec:
+      containers:
+        - name: etcd
+          command: ["/usr/local/bin/etcd"]
+          args:
+            - "--data-dir"
+            - "/var/lib/etcd"
+            - "--enable-v2"
+            - "--listen-client-urls"
+            - "http://0.0.0.0:2379"
+            - "--advertise-client-urls"
+            - "http://0.0.0.0:2379"
+            - "--initial-cluster-state"
+            - "new"
+          image: registry.k8s.io/etcd:3.4.13-0
+          ports:
+            - containerPort: 2379
+              name: client
+              protocol: TCP
+            - containerPort: 2380
+              name: server
+              protocol: TCP
+      restartPolicy: Always
+---
+apiVersion: "kubeflow.org/v1"
+kind: PyTorchJob
+metadata:
+  name: megatron-bridge-qwen3
+spec:
+  elasticPolicy:
+    rdzvBackend: etcd
+    rdzvHost: etcd
+    rdzvPort: 2379
+    minReplicas: 1
+    maxReplicas: 64
+    maxRestarts: 100
+    metrics:
+      - type: Resource
+        resource:
+          name: cpu
+          target:
+            type: Utilization
+            averageUtilization: 90
+  pytorchReplicaSpecs:
+    Worker:
+      replicas: ${NUM_NODES}
+      restartPolicy: OnFailure
+      template:
+        metadata:
+          labels:
+            app: megatron-bridge-qwen3
+        spec:
+          volumes:
+            - name: shmem
+              emptyDir:
+                medium: Memory
+                sizeLimit: 128Gi
+            - name: local
+              hostPath:
+                path: /mnt/k8s-disks/0
+            - name: fsx-pv
+              persistentVolumeClaim:
+                claimName: fsx-claim
+          containers:
+            - name: pytorch
+              image: ${REPO_URI}
+              imagePullPolicy: Always
+              resources:
+                requests:
+                  nvidia.com/gpu: ${GPU_PER_NODE}
+                  vpc.amazonaws.com/efa: ${EFA_PER_NODE}
+                limits:
+                  nvidia.com/gpu: ${GPU_PER_NODE}
+                  vpc.amazonaws.com/efa: ${EFA_PER_NODE}
+              env:
+              - name: LOGLEVEL
+                value: "DEBUG"
+              - name: FI_PROVIDER
+                value: ${FI_PROVIDER}
+              - name: FI_EFA_USE_DEVICE_RDMA
+                value: "1"
+              - name: FI_EFA_FORK_SAFE
+                value: "1"
+              - name: FI_LOG_LEVEL
+                value: "1"
+              - name: FI_EFA_ENABLE_SHM_TRANSFER
+                value: "1"
+              - name: TORCH_DISTRIBUTED_DEBUG
+                value: "DETAIL"
+              - name: TORCH_NCCL_ENABLE_MONITORING
+                value: "1"
+              - name: TORCH_NCCL_TRACE_BUFFER_SIZE
+                value: "20000"
+              - name: TORCH_NCCL_DUMP_ON_TIMEOUT
+                value: "1"
+              - name: TORCH_NCCL_DEBUG_INFO_TEMP_FILE
+                value: "/local/nccl_trace_rank_"
+              - name: PYTORCH_CUDA_ALLOC_CONF
+                value: "expandable_segments:True"
+              - name: NCCL_DEBUG
+                value: "INFO"
+              - name: NCCL_SOCKET_IFNAME
+                value: "^lo"
+              - name: TORCH_NCCL_ASYNC_ERROR_HANDLING
+                value: "1"
+              - name: CUDA_DEVICE_MAX_CONNECTIONS
+                value: "1"
+              - name: HF_TOKEN
+                valueFrom:
+                  secretKeyRef:
+                    name: hf-token
+                    key: token
+              command:
+                - "/usr/local/bin/torchrun"
+                - "--nproc_per_node=${GPU_PER_NODE}"
+                - "--nnodes=${NUM_NODES}"
+              args:
+                - /workspace/pretrain_qwen3.py
+                - --model-size=${MODEL_SIZE}
+                - --hf-model-path=/fsx/qwen3/${MODEL_SIZE}
+                - --train-iters=${TRAIN_ITERS}
+                - --seq-length=${SEQ_LENGTH}
+                - --global-batch-size=${GLOBAL_BATCH_SIZE}
+                - --micro-batch-size=${MICRO_BATCH_SIZE}
+                - --tp=${TENSOR_PARALLEL}
+                - --pp=${PIPELINE_PARALLEL}
+              volumeMounts:
+                - name: shmem
+                  mountPath: /dev/shm
+                - name: local
+                  mountPath: /local
+                - name: fsx-pv
+                  mountPath: /fsx

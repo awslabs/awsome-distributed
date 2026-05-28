@@ -1,0 +1,51 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: download-qwen3-model
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: download-model
+        image: ${REPO_URI}
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -ex
+            pip install huggingface_hub
+            mkdir -p /fsx/qwen3
+            python3 -c "
+            from huggingface_hub import snapshot_download
+            import os
+            snapshot_download(
+                repo_id='${HF_MODEL}',
+                local_dir='/fsx/qwen3/${MODEL_SIZE}',
+                token=os.environ.get('HF_TOKEN', None),
+            )
+            print('Download complete.')
+            "
+            ls -alh /fsx/qwen3/${MODEL_SIZE}/
+        env:
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token
+              key: token
+        volumeMounts:
+        - name: fsx-pv
+          mountPath: /fsx
+        resources:
+          requests:
+            cpu: "4"
+            memory: "32Gi"
+          limits:
+            cpu: "8"
+            memory: "64Gi"
+      volumes:
+      - name: fsx-pv
+        persistentVolumeClaim:
+          claimName: fsx-claim
