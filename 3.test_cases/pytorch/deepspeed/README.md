@@ -72,7 +72,8 @@ The benchmark uses preprocessed data in Megatron format with the GPT-2 tokenizer
    ```bash
    git clone https://github.com/microsoft/Megatron-DeepSpeed /fsx/deepspeed/Megatron-DeepSpeed
 
-   python3 /fsx/deepspeed/Megatron-DeepSpeed/tools/preprocess_data.py \
+    enroot start --rw /fsx/apps/deepspeed.sqsh \
+    python3 /fsx/deepspeed/Megatron-DeepSpeed/tools/preprocess_data.py \
        --input synthetic_corpus.json \
        --output-prefix BookCorpusDataset_text_document \
        --vocab-file gpt2-vocab.json \
