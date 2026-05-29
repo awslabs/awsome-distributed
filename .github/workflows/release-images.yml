@@ -1,0 +1,145 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Caller workflow that fans out to the reusable build-image.yml for each image.
+#
+# Triggers:
+#   - pull_request: build-only validation (no push) of changed images
+#   - push to main with per-image path filters (only the changed image rebuilds)
+#   - workflow_dispatch with a dropdown to pick a single image
+#   - release tags (build/publish all images for the release)
+#
+# The reusable build-image.yml skips push on pull_request, so the PR jobs below
+# validate the Docker build without publishing.
+
+name: release-images
+
+on:
+  pull_request:
+    paths:
+      - "micro-benchmarks/nccl-tests/**"
+      - ".github/image-manifest.yaml"
+      - ".github/workflows/build-image.yml"
+      - ".github/workflows/release-images.yml"
+  push:
+    branches:
+      - main
+    # Top-level paths gate the whole workflow run. With a single image today this is
+    # sufficient; the per-image dispatch below uses a paths-filter job so that adding
+    # more images rebuilds only the one that changed.
+    paths:
+      - "micro-benchmarks/nccl-tests/**"
+      - ".github/image-manifest.yaml"
+      - ".github/workflows/build-image.yml"
+      - ".github/workflows/release-images.yml"
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Which image to build and publish"
+        required: true
+        type: choice
+        options:
+          - nccl-tests
+  release:
+    types:
+      - published
+
+# Reusable workflows inherit the caller's permissions and can only narrow them,
+# so the OIDC permission MUST be granted here for the downstream ECR Public
+# push (assume awslabs-AOSH-GitHubActionsRole) to succeed.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ---- D1: version source-of-truth parity gate ----
+  # The manifest (.github/image-manifest.yaml) and the manual-fallback buildspec
+  # (micro-benchmarks/nccl-tests/buildspec.yaml) both carry the six versions.
+  # This job FAILS if they disagree, so a PR that bumps one but not the other
+  # cannot merge. It also closes the cutover-validation gap (D2): a PR that edits
+  # only buildspec.yaml will fail here until the manifest is updated to match.
+  manifest-buildspec-parity:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert manifest versions equal buildspec versions
+        run: |
+          set -euo pipefail
+          MANIFEST=.github/image-manifest.yaml
+          BUILDSPEC=micro-benchmarks/nccl-tests/buildspec.yaml
+          fail=0
+          for KEY in CUDA_VERSION GDRCOPY_VERSION EFA_INSTALLER_VERSION \
+                     AWS_OFI_NCCL_VERSION NCCL_VERSION NCCL_TESTS_VERSION; do
+            M=$(yq -r ".images.\"nccl-tests\".build_args.${KEY}" "${MANIFEST}")
+            B=$(yq -r ".env.variables.${KEY}" "${BUILDSPEC}")
+            if [ "${M}" != "${B}" ]; then
+              echo "::error file=${MANIFEST}::${KEY} mismatch: manifest='${M}' buildspec='${B}'"
+              fail=1
+            else
+              echo "OK ${KEY}=${M}"
+            fi
+          done
+          if [ "${fail}" -ne 0 ]; then
+            echo "::error::manifest and buildspec versions disagree; sync both files."
+            exit 1
+          fi
+
+  # Detect which images changed (push to main OR pull_request) so the fan-out
+  # only fires for the affected images.
+  changes:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      nccl-tests: ${{ steps.filter.outputs.nccl-tests }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            nccl-tests:
+              - 'micro-benchmarks/nccl-tests/**'
+              - '.github/image-manifest.yaml'
+
+  # ---- pull_request: validate the build of changed images (no push) ----
+  pr-nccl-tests:
+    needs: [changes, manifest-buildspec-parity]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.nccl-tests == 'true'
+    uses: ./.github/workflows/build-image.yml
+    with:
+      image: nccl-tests
+    permissions:
+      id-token: write
+      contents: read
+
+  # ---- push to main: rebuild changed images only ----
+  push-nccl-tests:
+    needs: [changes, manifest-buildspec-parity]
+    if: github.event_name == 'push' && needs.changes.outputs.nccl-tests == 'true'
+    uses: ./.github/workflows/build-image.yml
+    with:
+      image: nccl-tests
+    permissions:
+      id-token: write
+      contents: read
+
+  # ---- workflow_dispatch: build the single chosen image ----
+  dispatch:
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/build-image.yml
+    with:
+      image: ${{ inputs.image }}
+    permissions:
+      id-token: write
+      contents: read
+
+  # ---- release published: build/publish every image ----
+  release-nccl-tests:
+    if: github.event_name == 'release'
+    uses: ./.github/workflows/build-image.yml
+    with:
+      image: nccl-tests
+    permissions:
+      id-token: write
+      contents: read

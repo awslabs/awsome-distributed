@@ -1,0 +1,235 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Reusable workflow: build + (optionally) publish a single multi-arch container image
+# defined in .github/image-manifest.yaml to ECR Public (public.ecr.aws/hpc-cloud).
+#
+# Strategy:
+#   prepare  -> read the manifest entry for `image`, derive TAG and the --build-arg list
+#   build    -> matrix over arch, each on its native CodeBuild-hosted runner fleet,
+#               build + push-by-digest (push only on non-PR events), export the digest
+#   merge    -> assemble the multi-arch manifest list from the per-arch digests and
+#               tag it :<TAG> and :latest (skipped on pull_request)
+#
+# On pull_request the image is built for validation only and never pushed.
+
+name: build-image
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: "Image key in .github/image-manifest.yaml (e.g. nccl-tests)"
+        required: true
+        type: string
+
+# Reusable workflows run with the CALLER's permissions; these are restated in
+# release-images.yml. id-token is required for GitHub OIDC -> assume the existing
+# ECR-publish role (awslabs-AOSH-GitHubActionsRole). The job runs on a
+# CodeBuild-hosted runner, but the OIDC token still comes from GitHub, so this
+# works regardless of where the job executes.
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ECR_PUBLIC_REGISTRY: public.ecr.aws
+  ECR_PUBLIC_NAMESPACE: hpc-cloud
+  AWS_REGION: us-east-1
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      context: ${{ steps.manifest.outputs.context }}
+      dockerfile: ${{ steps.manifest.outputs.dockerfile }}
+      ecr_repo: ${{ steps.manifest.outputs.ecr_repo }}
+      platforms: ${{ steps.manifest.outputs.platforms }}
+      build_arg_flags: ${{ steps.manifest.outputs.build_arg_flags }}
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read manifest entry
+        id: manifest
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          MANIFEST=.github/image-manifest.yaml
+          if ! yq -e ".images.\"${IMAGE}\"" "${MANIFEST}" >/dev/null 2>&1; then
+            echo "::error::Image key '${IMAGE}' not found in ${MANIFEST}"
+            exit 1
+          fi
+          CONTEXT=$(yq -r ".images.\"${IMAGE}\".context" "${MANIFEST}")
+          DOCKERFILE=$(yq -r ".images.\"${IMAGE}\".dockerfile" "${MANIFEST}")
+          ECR_REPO=$(yq -r ".images.\"${IMAGE}\".ecr_repo" "${MANIFEST}")
+          # platforms -> compact JSON array consumed by the matrix via fromJSON()
+          PLATFORMS=$(yq -o=json -I=0 ".images.\"${IMAGE}\".platforms" "${MANIFEST}")
+          # build_args map -> "--build-arg K=V --build-arg ..." (image-agnostic; passes every arg)
+          BUILD_ARG_FLAGS=$(yq -r \
+            ".images.\"${IMAGE}\".build_args | to_entries | map(\"--build-arg \" + .key + \"=\" + .value) | join(\" \")" \
+            "${MANIFEST}")
+          {
+            echo "context=${CONTEXT}"
+            echo "dockerfile=${DOCKERFILE}"
+            echo "ecr_repo=${ECR_REPO}"
+            echo "platforms=${PLATFORMS}"
+            echo "build_arg_flags=${BUILD_ARG_FLAGS}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Derive image tag
+        id: tag
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          MANIFEST=.github/image-manifest.yaml
+          # Tag formula MUST match micro-benchmarks/nccl-tests/buildspec.yaml exactly:
+          #   cuda<CUDA>-efa<EFA>-ofi<OFI>-nccl<NCCL>-tests<TESTS>
+          # (GDRCOPY_VERSION is a build arg but is intentionally NOT part of the tag.)
+          CUDA=$(yq -r ".images.\"${IMAGE}\".build_args.CUDA_VERSION" "${MANIFEST}")
+          EFA=$(yq -r ".images.\"${IMAGE}\".build_args.EFA_INSTALLER_VERSION" "${MANIFEST}")
+          OFI=$(yq -r ".images.\"${IMAGE}\".build_args.AWS_OFI_NCCL_VERSION" "${MANIFEST}")
+          NCCL=$(yq -r ".images.\"${IMAGE}\".build_args.NCCL_VERSION" "${MANIFEST}")
+          TESTS=$(yq -r ".images.\"${IMAGE}\".build_args.NCCL_TESTS_VERSION" "${MANIFEST}")
+          TAG="cuda${CUDA}-efa${EFA}-ofi${OFI}-nccl${NCCL}-tests${TESTS}"
+          echo "Derived TAG=${TAG}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        # platforms manifest field -> e.g. ["amd64","arm64"]. We deliberately do
+        # NOT use a matrix `include:` to map arch->project, because an include row
+        # spawns a phantom job for an arch that isn't in `platforms` (a single-arch
+        # image would still get an arm64 job). Instead the runner project is
+        # derived inline from matrix.arch below, so the matrix is exactly the
+        # manifest's platform list.
+        arch: ${{ fromJSON(needs.prepare.outputs.platforms) }}
+    # IMAGE-AGNOSTIC, shared runner projects. These names MUST match the Terraform
+    # CodeBuild project names exactly (<project_name_prefix>-x86 / -arm, with
+    # project_name_prefix = "adai-image-builder"). See the GitLab repo's
+    # terraform/codebuild.tf. CodeBuild ignores the webhook on a name mismatch and
+    # the job hangs. The run_id/run_attempt suffix is mandatory for runner claim.
+    runs-on: codebuild-adai-image-builder-${{ matrix.arch == 'arm64' && 'arm' || 'x86' }}-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials (GitHub OIDC)
+        if: github.event_name != 'pull_request'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          # Existing GitHub OIDC role, reused (already trusted by FSDP/megatron
+          # workflows). vars.ECR_PUBLISH_ROLE_ARN =
+          #   arn:aws:iam::159553542841:role/awslabs-AOSH-GitHubActionsRole
+          role-to-assume: ${{ vars.ECR_PUBLISH_ROLE_ARN }}
+
+      - name: Login to ECR Public
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          aws ecr-public get-login-password --region "${AWS_REGION}" \
+            | docker login --username AWS --password-stdin "${ECR_PUBLIC_REGISTRY}"
+
+      - name: Build and push by digest (${{ matrix.arch }})
+        id: build
+        env:
+          ECR_REPO: ${{ needs.prepare.outputs.ecr_repo }}
+          CONTEXT: ${{ needs.prepare.outputs.context }}
+          DOCKERFILE: ${{ needs.prepare.outputs.dockerfile }}
+          BUILD_ARG_FLAGS: ${{ needs.prepare.outputs.build_arg_flags }}
+          ARCH: ${{ matrix.arch }}
+          IS_PR: ${{ github.event_name == 'pull_request' }}
+        run: |
+          set -euo pipefail
+          IMAGE_REF="${ECR_PUBLIC_REGISTRY}/${ECR_PUBLIC_NAMESPACE}/${ECR_REPO}"
+          if [ "${IS_PR}" = "true" ]; then
+            # Validation only: build the single arch, do not push, do not export a digest.
+            docker buildx build \
+              --platform "linux/${ARCH}" \
+              ${BUILD_ARG_FLAGS} \
+              -f "${CONTEXT}/${DOCKERFILE}" \
+              "${CONTEXT}"
+            echo "Pull request build complete (not pushed)."
+            exit 0
+          fi
+          # push-by-digest: emit a digest-only image (no tag) per arch; the merge job
+          # stitches the per-arch digests into a tagged manifest list.
+          docker buildx build \
+            --platform "linux/${ARCH}" \
+            ${BUILD_ARG_FLAGS} \
+            -f "${CONTEXT}/${DOCKERFILE}" \
+            --output "type=image,name=${IMAGE_REF},push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file metadata.json \
+            "${CONTEXT}"
+          DIGEST=$(jq -r '."containerimage.digest"' metadata.json)
+          echo "Pushed ${IMAGE_REF}@${DIGEST}"
+          # Sanitize the digest into a filename (sha256:... -> sha256-...) for the artifact.
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [prepare, build]
+    if: github.event_name != 'pull_request'
+    # The merge is lightweight (manifest-list assembly only, no Docker build), so
+    # it runs on a standard GitHub-hosted runner. It uses the SAME GitHub OIDC
+    # role as the build jobs for the ECR Public push — single push principal.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Configure AWS credentials (GitHub OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ vars.ECR_PUBLISH_ROLE_ARN }}
+
+      - name: Login to ECR Public
+        run: |
+          set -euo pipefail
+          aws ecr-public get-login-password --region "${AWS_REGION}" \
+            | docker login --username AWS --password-stdin "${ECR_PUBLIC_REGISTRY}"
+
+      - name: Create and push multi-arch manifest list
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          ECR_REPO: ${{ needs.prepare.outputs.ecr_repo }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          IMAGE_REF="${ECR_PUBLIC_REGISTRY}/${ECR_PUBLIC_NAMESPACE}/${ECR_REPO}"
+          # Each artifact filename is a bare digest (sha256:... with the prefix stripped);
+          # rebuild the per-arch source references for the manifest list.
+          SOURCES=$(printf "${IMAGE_REF}@sha256:%s " *)
+          echo "Creating ${IMAGE_REF}:${TAG} and :latest from: ${SOURCES}"
+          docker buildx imagetools create \
+            -t "${IMAGE_REF}:${TAG}" \
+            -t "${IMAGE_REF}:latest" \
+            ${SOURCES}
+          docker buildx imagetools inspect "${IMAGE_REF}:${TAG}"

@@ -1,0 +1,41 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Image manifest consumed by .github/workflows/build-image.yml.
+#
+# Schema (per image, keyed by `key`):
+#   key:         logical image name (must match the top-level map key)
+#   context:     Docker build context, relative to repo root
+#   dockerfile:  Dockerfile path, relative to `context`
+#   ecr_repo:    ECR Public repository name (pushed under public.ecr.aws/hpc-cloud/<ecr_repo>)
+#   platforms:   list of CPU arches to build (amd64 | arm64); each maps to a native runner fleet
+#   build_args:  map of Docker build args -> values (passed verbatim as --build-arg KEY=VALUE)
+#
+# The image tag is derived by build-image.yml from build_args, NOT stored here, so that
+# a single source of truth (this map) drives both the build args and the tag.
+#
+# SOURCE-OF-TRUTH COUPLING (D1): the build_args versions below are intentionally
+# duplicated in micro-benchmarks/nccl-tests/buildspec.yaml, which remains the
+# documented manual fallback (DESIGN section 6, Rollback). To prevent silent
+# drift, release-images.yml runs a `manifest-buildspec-parity` check that asserts
+# all six versions (CUDA, GDRCOPY, EFA, OFI, NCCL, NCCL_TESTS) in this manifest
+# equal the buildspec values. A PR that bumps one file but not the other FAILS
+# that check. If you bump a version here, bump it in buildspec.yaml too (and vice
+# versa).
+
+images:
+  nccl-tests:
+    key: nccl-tests
+    context: micro-benchmarks/nccl-tests
+    dockerfile: nccl-tests.Dockerfile
+    ecr_repo: nccl-tests
+    platforms:
+      - amd64
+      - arm64
+    build_args:
+      CUDA_VERSION: "13.0.2"
+      GDRCOPY_VERSION: "v2.5.2"
+      EFA_INSTALLER_VERSION: "1.48.0"
+      AWS_OFI_NCCL_VERSION: "v1.19.0"
+      NCCL_VERSION: "v2.30.4-1"
+      NCCL_TESTS_VERSION: "v2.18.3"
