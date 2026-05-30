@@ -11,7 +11,7 @@ install_ansible()
     apt-get update
     # apt-get install -y ansible=$ANSIBLE_VERSION
     apt-get install -y python3-pip
-    python3 -m pip install "ansible==${ANSIBLE_VERSION}"
+    python3 -m pip install --break-system-packages "ansible==${ANSIBLE_VERSION}"
     ansible-galaxy collection install ansible.posix
 
     # Verify ansible installation
