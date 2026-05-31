@@ -1,0 +1,16 @@
+FROM nvcr.io/nvidia/isaac-sim:5.1.0
+
+# Install S3 helper dependencies (boto3 is pre-installed in Isaac Sim)
+# Install PIL for occupancy map visualization and scipy for dilation
+RUN /isaac-sim/python.sh -m pip install --no-cache-dir Pillow scipy
+
+# Copy all pipeline scripts
+COPY src/amr_utils/ /isaac-sim/scripts/amr_utils/
+COPY src/stage1_scene_setup.py /isaac-sim/scripts/
+COPY src/stage2_occupancy_map.py /isaac-sim/scripts/
+COPY src/stage3_trajectory_gen.py /isaac-sim/scripts/
+COPY src/stage4_render.py /isaac-sim/scripts/
+
+WORKDIR /isaac-sim
+
+# No ENTRYPOINT — each stage specifies its own command

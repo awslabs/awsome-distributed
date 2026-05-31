@@ -1,0 +1,276 @@
+# REFERENCE ONLY — this file uses the K8s CRD format (apiVersion: osmo.nvidia.com/v1)
+# and contains K8s-native fields (env, tolerations, volumes, etc.) that OSMO v6.2
+# does NOT support at the task level. It will fail validation if submitted.
+#
+# For actual submission, use:
+#   - data-pipeline-workflow.yaml  (stages 1-5, OSMO CLI format)
+#   - training-workflow.yaml       (stage 6, OSMO CLI format)
+apiVersion: osmo.nvidia.com/v1
+kind: Workflow
+metadata:
+  name: amr-navigation-pipeline
+  namespace: ${NAMESPACE}
+spec:
+  pool: simulation
+  priority: medium
+  tasks:
+    - name: scene-setup
+      image: ${ISAAC_SIM_IMAGE_URI}
+      imagePullSecrets:
+        - ngc-secret
+      command:
+        - /isaac-sim/python.sh
+        - /isaac-sim/scripts/stage1_scene_setup.py
+        - --s3_bucket
+        - "${S3_BUCKET}"
+        - --run_id
+        - "${RUN_ID}"
+        - --headless
+      env:
+        ACCEPT_EULA: "Y"
+        PRIVACY_CONSENT: "Y"
+      resources:
+        gpu: 1
+        cpu: 16
+        memory: 32Gi
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      nodeSelector:
+        karpenter.k8s.aws/instance-category: "g"
+      schedulerName: kai-scheduler
+      serviceAccountName: amr-pipeline-sa
+      volumes:
+        - name: cache
+          mountPath: /isaac-sim/.cache
+          emptyDir:
+            sizeLimit: 50Gi
+        - name: shm
+          mountPath: /dev/shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+        - name: output
+          mountPath: /output
+          emptyDir: {}
+        - name: input
+          mountPath: /input
+          emptyDir: {}
+      timeout: 1800
+
+    - name: occupancy-map
+      inputs: [scene-setup]
+      image: ${ISAAC_SIM_IMAGE_URI}
+      imagePullSecrets:
+        - ngc-secret
+      command:
+        - /isaac-sim/python.sh
+        - /isaac-sim/scripts/stage2_occupancy_map.py
+        - --s3_bucket
+        - "${S3_BUCKET}"
+        - --run_id
+        - "${RUN_ID}"
+        - --headless
+      env:
+        ACCEPT_EULA: "Y"
+        PRIVACY_CONSENT: "Y"
+      resources:
+        gpu: 1
+        cpu: 16
+        memory: 32Gi
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      nodeSelector:
+        karpenter.k8s.aws/instance-category: "g"
+      schedulerName: kai-scheduler
+      serviceAccountName: amr-pipeline-sa
+      volumes:
+        - name: cache
+          mountPath: /isaac-sim/.cache
+          emptyDir:
+            sizeLimit: 50Gi
+        - name: shm
+          mountPath: /dev/shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+        - name: output
+          mountPath: /output
+          emptyDir: {}
+        - name: input
+          mountPath: /input
+          emptyDir: {}
+      timeout: 1800
+
+    - name: trajectory-gen
+      inputs: [occupancy-map]
+      image: ${ISAAC_SIM_IMAGE_URI}
+      imagePullSecrets:
+        - ngc-secret
+      command:
+        - /isaac-sim/python.sh
+        - /isaac-sim/scripts/stage3_trajectory_gen.py
+        - --s3_bucket
+        - "${S3_BUCKET}"
+        - --run_id
+        - "${RUN_ID}"
+        - --num_trajectories
+        - "${NUM_TRAJECTORIES:-10}"
+        - --headless
+      env:
+        ACCEPT_EULA: "Y"
+        PRIVACY_CONSENT: "Y"
+      resources:
+        gpu: 1
+        cpu: 16
+        memory: 32Gi
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      nodeSelector:
+        karpenter.k8s.aws/instance-category: "g"
+      schedulerName: kai-scheduler
+      serviceAccountName: amr-pipeline-sa
+      volumes:
+        - name: cache
+          mountPath: /isaac-sim/.cache
+          emptyDir:
+            sizeLimit: 50Gi
+        - name: shm
+          mountPath: /dev/shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+        - name: output
+          mountPath: /output
+          emptyDir: {}
+        - name: input
+          mountPath: /input
+          emptyDir: {}
+      timeout: 3600
+
+    - name: render
+      inputs: [trajectory-gen]
+      image: ${ISAAC_SIM_IMAGE_URI}
+      imagePullSecrets:
+        - ngc-secret
+      command:
+        - /isaac-sim/python.sh
+        - /isaac-sim/scripts/stage4_render.py
+        - --s3_bucket
+        - "${S3_BUCKET}"
+        - --run_id
+        - "${RUN_ID}"
+        - --headless
+      env:
+        ACCEPT_EULA: "Y"
+        PRIVACY_CONSENT: "Y"
+      resources:
+        gpu: 1
+        cpu: 16
+        memory: 32Gi
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      nodeSelector:
+        karpenter.k8s.aws/instance-category: "g"
+      schedulerName: kai-scheduler
+      serviceAccountName: amr-pipeline-sa
+      volumes:
+        - name: cache
+          mountPath: /isaac-sim/.cache
+          emptyDir:
+            sizeLimit: 50Gi
+        - name: shm
+          mountPath: /dev/shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+        - name: output
+          mountPath: /output
+          emptyDir: {}
+        - name: input
+          mountPath: /input
+          emptyDir: {}
+      timeout: 7200
+
+    - name: domain-augment
+      inputs: [render]
+      image: ${COSMOS_IMAGE_URI}
+      imagePullSecrets:
+        - ngc-secret
+      command:
+        - python
+        - /scripts/stage5_domain_augment.py
+        - --s3_bucket
+        - "${S3_BUCKET}"
+        - --run_id
+        - "${RUN_ID}"
+      resources:
+        gpu: 1
+        cpu: 16
+        memory: 32Gi
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      nodeSelector:
+        karpenter.k8s.aws/instance-category: "g"
+      schedulerName: kai-scheduler
+      serviceAccountName: amr-pipeline-sa
+      volumes:
+        - name: output
+          mountPath: /output
+          emptyDir: {}
+        - name: input
+          mountPath: /input
+          emptyDir: {}
+      timeout: 7200
+
+    - name: train-evaluate
+      inputs: [render, domain-augment]
+      image: ${XMOBILITY_IMAGE_URI}
+      imagePullSecrets:
+        - ngc-secret
+      command:
+        - python
+        - /scripts/stage6_train_evaluate.py
+        - --s3_bucket
+        - "${S3_BUCKET}"
+        - --run_id
+        - "${RUN_ID}"
+        - --pretrain_epochs
+        - "${PRETRAIN_EPOCHS:-10}"
+        - --train_epochs
+        - "${TRAIN_EPOCHS:-10}"
+      resources:
+        gpu: 8
+        cpu: 192
+        memory: 2048Gi
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      nodeSelector:
+        karpenter.k8s.aws/instance-category: "p"
+      schedulerName: kai-scheduler
+      serviceAccountName: amr-pipeline-sa
+      volumes:
+        - name: shm
+          mountPath: /dev/shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Gi
+        - name: output
+          mountPath: /output
+          emptyDir: {}
+        - name: input
+          mountPath: /input
+          emptyDir: {}
+      exitAction: reschedule
+      timeout: 43200

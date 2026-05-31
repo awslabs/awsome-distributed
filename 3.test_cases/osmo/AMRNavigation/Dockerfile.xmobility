@@ -1,0 +1,33 @@
+FROM nvcr.io/nvidia/pytorch:25.01-py3
+
+# Install X-Mobility + lerobot dependencies
+RUN pip install --no-cache-dir \
+    boto3 \
+    diffusers==0.29.2 \
+    einops==0.7.0 \
+    gin-config==0.5.0 \
+    pytorch-lightning==2.5.0.post0 \
+    timm==1.0.14 \
+    transformers==4.48.1 \
+    wandb==0.19.4 \
+    huggingface_hub \
+    torcheval \
+    moviepy \
+    polars \
+    tensorboardX \
+    av jsonlines datasets deepdiff draccus imageio \
+    opencv-python-headless gymnasium flask pyserial \
+    rerun-sdk termcolor cmake
+
+# Pin numpy to base image version (torch compiled against it)
+RUN pip install --no-cache-dir "numpy==1.26.4"
+
+RUN pip install --no-cache-dir lerobot==0.3.3 --no-deps
+
+# Clone X-Mobility source
+RUN git clone https://github.com/NVlabs/X-MOBILITY.git /workspace/xmobility
+
+COPY src/amr_utils/ /scripts/amr_utils/
+COPY src/stage6_train_evaluate.py /scripts/
+
+WORKDIR /workspace/xmobility

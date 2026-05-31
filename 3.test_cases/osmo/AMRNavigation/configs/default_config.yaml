@@ -1,0 +1,43 @@
+# MobilityGen SDG configuration
+scene: "omniverse://localhost/NVIDIA/Assets/Isaac/4.2/Isaac/Environments/Simple_Warehouse/full_warehouse.usd"
+num_trajectories: 5
+num_frames: 100
+image_width: 640
+image_height: 480
+
+# Sensor outputs
+sensors:
+  rgb: true
+  depth: true
+  semantic_segmentation: true
+
+# AMR Navigation Pipeline (6-stage) settings
+# Used by pipeline_config.yaml and 3.submit-pipeline.sh
+pipeline:
+  s3_bucket: "amr-pipeline-data"
+  run_id: "run-001"
+
+  scene_setup:
+    num_aisles: 4
+    aisle_length: 20.0
+
+  occupancy_map:
+    resolution: 0.1
+    depth_threshold: 0.5
+
+  trajectory_gen:
+    num_trajectories: 10
+    num_frames: 100
+    camera_height: 1.0
+
+  render:
+    image_width: 640
+    image_height: 480
+
+  augment:
+    num_variants: 1
+
+  train_evaluate:
+    epochs: 20
+    batch_size: 16
+    learning_rate: 0.0001

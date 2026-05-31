@@ -1,0 +1,30 @@
+# CPU-only smoke test — validates OSMO control plane without requiring GPU capacity.
+# Submit via OSMO API (preferred) or kubectl apply -f smoke-test-workflow.yaml
+# Monitor: osmo workflow list  (or kubectl get workflows -n isaac-sim -w)
+apiVersion: osmo.nvidia.com/v1
+kind: Workflow
+metadata:
+  name: osmo-smoke-test
+  namespace: isaac-sim
+spec:
+  tasks:
+    - name: health-check
+      container:
+        image: busybox:1.36
+        command:
+          - /bin/sh
+          - -c
+          - |
+            echo "=== OSMO Smoke Test ==="
+            echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "Hostname: $(hostname)"
+            echo "OSMO workflow execution validated successfully."
+            echo "=== Done ==="
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+      # No GPU toleration — runs on cpu-system or system nodes

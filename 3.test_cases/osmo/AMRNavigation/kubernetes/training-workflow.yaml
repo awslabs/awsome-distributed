@@ -1,0 +1,38 @@
+# OSMO Workflow — AMR Navigation Model Training
+#
+# Single-task workflow for X-Mobility navigation model training.
+# Runs on P-series (Capacity Blocks) with 8 GPUs.
+# Designed to run after the data pipeline completes.
+#
+# Two-stage training:
+#   1. World model pretraining on rendered + augmented images
+#   2. Action policy fine-tuning on trajectory labels
+#
+# Submit:  envsubst < training-workflow.yaml | osmo workflow submit -f -
+# Monitor: osmo workflow list
+#
+# Note: OSMO workflow tasks only support: name, lead, image, command, args,
+#       resources, inputs. K8s-native fields (env, imagePullSecrets,
+#       nodeSelector, tolerations, volumes, timeout) are NOT supported.
+workflow:
+  name: amr-training-${RUN_ID}
+
+  groups:
+    - name: training
+      tasks:
+        - name: train-evaluate
+          lead: true
+          image: ${XMOBILITY_IMAGE_URI}
+          command: ["python"]
+          args:
+            - |
+              /scripts/stage6_train_evaluate.py \
+                --data_dir {{output}}/data \
+                --s3_bucket ${S3_BUCKET} \
+                --run_id ${RUN_ID} \
+                --pretrain_epochs ${PRETRAIN_EPOCHS:-10} \
+                --train_epochs ${TRAIN_EPOCHS:-10}
+          resources:
+            gpu: 8
+            cpu: 192
+            memory: 2048Gi

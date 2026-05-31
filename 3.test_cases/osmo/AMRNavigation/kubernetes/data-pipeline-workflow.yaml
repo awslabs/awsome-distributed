@@ -1,0 +1,181 @@
+# OSMO Combination Workflow — AMR Synthetic Data Generation Pipeline
+#
+# Stages 1-5 of the AMR navigation pipeline using OSMO groups for
+# parallel execution where possible.  Stage 6 (training) is a separate
+# workflow so it can be scheduled independently on P-series Capacity Blocks.
+#
+# Group execution order:
+#   scene-setup ──> spatial-analysis ──> trajectory-planning ──┐
+#                                                              ├──> domain-augmentation
+#                                   multi-modal-render ────────┘
+#                                   (rgb + depth + segmentation in parallel)
+#
+# Prerequisites:
+#   - OSMO v6.2+ control plane running on the cluster
+#   - ECR registry added to credential_config.disable_registry_validation
+#     (OSMO's Docker token auth is incompatible with ECR — see PROGRESS.md)
+#   - Container images pushed to ECR (see 1.build-container.sh)
+#
+# Submit:  envsubst < data-pipeline-workflow.yaml | osmo workflow submit -f -
+#   or via REST API:
+#     YAML=$(envsubst < data-pipeline-workflow.yaml)
+#     curl -X POST http://osmo-service:8000/api/pool/default/workflow \
+#       -H "Content-Type: application/json" \
+#       -d "{\"file\": $(echo "$YAML" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')}"
+#
+# Monitor: osmo workflow list
+#
+# Note: OSMO workflow tasks only support: name, lead, image, command, args,
+#       resources, inputs. K8s-native fields (env, imagePullSecrets,
+#       nodeSelector, tolerations, volumes, timeout, schedulerName,
+#       serviceAccountName) are NOT supported and will cause validation errors.
+workflow:
+  name: amr-data-pipeline-${RUN_ID}
+
+  groups:
+    # ── Group 1: Build warehouse USD scene ──────────────────────────────
+    - name: scene-setup
+      tasks:
+        - name: build-scene
+          lead: true
+          image: ${ISAAC_SIM_IMAGE_URI}
+          command: ["/isaac-sim/python.sh"]
+          args:
+            - |
+              /isaac-sim/scripts/stage1_scene_setup.py \
+                --output_dir {{output}}/scene \
+                --num_aisles ${NUM_AISLES:-4} \
+                --headless
+          resources:
+            gpu: 1
+            cpu: 16
+            memory: 32Gi
+
+    # ── Group 2: Compute occupancy grid from scene prims ────────────────
+    - name: spatial-analysis
+      tasks:
+        - name: occupancy-map
+          lead: true
+          image: ${ISAAC_SIM_IMAGE_URI}
+          command: ["/isaac-sim/python.sh"]
+          args:
+            - |
+              /isaac-sim/scripts/stage2_occupancy_map.py \
+                --scene_dir {{input:0}}/scene \
+                --output_dir {{output}}/occupancy \
+                --headless
+          inputs:
+            - task: build-scene
+          resources:
+            gpu: 1
+            cpu: 16
+            memory: 32Gi
+
+    # ── Group 3: A* trajectory planning ─────────────────────────────────
+    - name: trajectory-planning
+      tasks:
+        - name: trajectory-gen
+          lead: true
+          image: ${ISAAC_SIM_IMAGE_URI}
+          command: ["/isaac-sim/python.sh"]
+          args:
+            - |
+              /isaac-sim/scripts/stage3_trajectory_gen.py \
+                --occupancy_dir {{input:0}}/occupancy \
+                --output_dir {{output}}/trajectories \
+                --num_trajectories ${NUM_TRAJECTORIES:-10} \
+                --headless
+          inputs:
+            - task: occupancy-map
+          resources:
+            gpu: 1
+            cpu: 16
+            memory: 32Gi
+
+    # ── Group 4: Multi-modal rendering (3 tasks in PARALLEL) ────────────
+    #
+    # Three render passes run concurrently on separate G-series GPUs:
+    #   - RGB: photo-realistic color images
+    #   - Depth: per-pixel depth maps for 3D reasoning
+    #   - Segmentation: semantic labels for each pixel
+    #
+    # All three consume the same scene + trajectory data.
+    # The lead task (render-rgb) gates group completion.
+    - name: multi-modal-render
+      tasks:
+        - name: render-rgb
+          lead: true
+          image: ${ISAAC_SIM_IMAGE_URI}
+          command: ["/isaac-sim/python.sh"]
+          args:
+            - |
+              /isaac-sim/scripts/stage4_render.py \
+                --scene_dir {{input:0}}/scene \
+                --trajectory_dir {{input:1}}/trajectories \
+                --output_dir {{output}}/rgb \
+                --render_mode rgb \
+                --headless
+          inputs:
+            - task: build-scene
+            - task: trajectory-gen
+          resources:
+            gpu: 1
+            cpu: 16
+            memory: 32Gi
+
+        - name: render-depth
+          image: ${ISAAC_SIM_IMAGE_URI}
+          command: ["/isaac-sim/python.sh"]
+          args:
+            - |
+              /isaac-sim/scripts/stage4_render.py \
+                --scene_dir {{input:0}}/scene \
+                --trajectory_dir {{input:1}}/trajectories \
+                --output_dir {{output}}/depth \
+                --render_mode depth \
+                --headless
+          inputs:
+            - task: build-scene
+            - task: trajectory-gen
+          resources:
+            gpu: 1
+            cpu: 16
+            memory: 32Gi
+
+        - name: render-segmentation
+          image: ${ISAAC_SIM_IMAGE_URI}
+          command: ["/isaac-sim/python.sh"]
+          args:
+            - |
+              /isaac-sim/scripts/stage4_render.py \
+                --scene_dir {{input:0}}/scene \
+                --trajectory_dir {{input:1}}/trajectories \
+                --output_dir {{output}}/segmentation \
+                --render_mode segmentation \
+                --headless
+          inputs:
+            - task: build-scene
+            - task: trajectory-gen
+          resources:
+            gpu: 1
+            cpu: 16
+            memory: 32Gi
+
+    # ── Group 5: Domain augmentation on rendered RGB images ─────────────
+    - name: domain-augmentation
+      tasks:
+        - name: domain-augment
+          lead: true
+          image: ${COSMOS_IMAGE_URI}
+          command: ["python"]
+          args:
+            - |
+              /scripts/stage5_domain_augment.py \
+                --input_dir {{input:0}}/rgb \
+                --output_dir {{output}}/augmented
+          inputs:
+            - task: render-rgb
+          resources:
+            gpu: 1
+            cpu: 16
+            memory: 32Gi
