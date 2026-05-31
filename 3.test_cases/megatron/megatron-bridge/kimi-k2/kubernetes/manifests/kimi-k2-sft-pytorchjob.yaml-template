@@ -1,0 +1,258 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Kimi K2 (1.04T-param MoE) full-parameter SFT on EKS with Megatron-Bridge.
+#
+# Expert-parallel all-to-all is provided by UCCL-EP over AWS EFA (the UCCL
+# `deep_ep` drop-in shadows NVIDIA DeepEP, which is NVSHMEM/IB-bound and does
+# NOT work on EFA). The container uses the shared, model-agnostic env image built
+# from ../../Dockerfile (ECR repo: megatron-bridge-uccl).
+#
+# This is a -template: render with envsubst before applying, e.g.
+#
+#   export REPO_URI=159553542841.dkr.ecr.us-west-2.amazonaws.com/megatron-bridge-uccl:nemo-25.11.01-uccl-0dc87eb
+#   export NUM_NODES=32          # 32x p6-b300.48xlarge = 256x B300
+#   export GPU_PER_NODE=8        # nvidia.com/gpu per node
+#   export EFA_PER_NODE=16       # vpc.amazonaws.com/efa per node (16 of 17 net cards are EFA; 1 is ENA-only)
+#   export INSTANCE_TYPE=p6-b300.48xlarge
+#   export FSX_CLAIM=fsx-claim   # PVC name for the FSx-for-Lustre filesystem mounted at /fsx
+#   export TENSOR_PARALLEL=8 EXPERT_PARALLEL=32 PIPELINE_PARALLEL=8 DATA_PARALLEL=4
+#   envsubst < kimi-k2-sft-pytorchjob.yaml-template | kubectl apply -f -
+#
+# NOTE on gang scheduling: this cluster runs the KAI scheduler. A capacity-block
+# node group only makes economic sense if all ${NUM_NODES} pods start together —
+# partial scheduling burns reserved GPU-hours while idle. See the commented KAI
+# PodGroup block at the bottom and uncomment both it and the pod-level
+# schedulerName / podgroup label to enable all-or-nothing (gang) scheduling.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd
+spec:
+  ports:
+    - name: etcd-client-port
+      port: 2379
+      protocol: TCP
+      targetPort: 2379
+  selector:
+    app: etcd
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: etcd
+  name: etcd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: etcd
+  template:
+    metadata:
+      labels:
+        app: etcd
+    spec:
+      containers:
+        - name: etcd
+          command: ["/usr/local/bin/etcd"]
+          args:
+            - "--data-dir"
+            - "/var/lib/etcd"
+            - "--enable-v2"
+            - "--listen-client-urls"
+            - "http://0.0.0.0:2379"
+            - "--advertise-client-urls"
+            - "http://0.0.0.0:2379"
+            - "--initial-cluster-state"
+            - "new"
+          image: registry.k8s.io/etcd:3.4.13-0
+          ports:
+            - containerPort: 2379
+              name: client
+              protocol: TCP
+            - containerPort: 2380
+              name: server
+              protocol: TCP
+      restartPolicy: Always
+---
+apiVersion: "kubeflow.org/v1"
+kind: PyTorchJob
+metadata:
+  name: kimi-k2-sft
+spec:
+  elasticPolicy:
+    rdzvBackend: etcd
+    rdzvHost: etcd
+    rdzvPort: 2379
+    minReplicas: ${NUM_NODES}
+    maxReplicas: ${NUM_NODES}
+    maxRestarts: 0
+  pytorchReplicaSpecs:
+    Worker:
+      replicas: ${NUM_NODES}
+      restartPolicy: OnFailure
+      template:
+        metadata:
+          labels:
+            app: kimi-k2-sft
+            # --- KAI gang scheduling (uncomment with the PodGroup block below) ---
+            # pod-group.scheduling.run.ai/name: kimi-k2-sft-pg
+        spec:
+          # --- KAI gang scheduling (uncomment with the PodGroup block below) ---
+          # schedulerName: kai-scheduler
+          nodeSelector:
+            node.kubernetes.io/instance-type: "${INSTANCE_TYPE}"
+          tolerations:
+            # GPU nodes carry the standard NVIDIA taint.
+            - key: nvidia.com/gpu
+              operator: Exists
+              effect: NoSchedule
+            # Dedicated benchmark / capacity-block node group taints.
+            - key: workload
+              operator: Equal
+              value: bench
+              effect: NoSchedule
+            - key: capacity-reservation
+              operator: Exists
+              effect: NoSchedule
+          volumes:
+            # Per-model SFT config mounted at /workspace/conf (NOT baked into the
+            # shared env image). Create it first:
+            #   kubectl create configmap kimi-k2-sft-conf \
+            #     --from-file=kimi_k2_sft.py=conf/kimi_k2_sft.py -n <namespace>
+            - name: conf
+              configMap:
+                name: kimi-k2-sft-conf
+            - name: shmem
+              hostPath:
+                path: /dev/shm
+            - name: local
+              hostPath:
+                path: /mnt/k8s-disks/0
+            - name: fsx-pv
+              persistentVolumeClaim:
+                claimName: ${FSX_CLAIM}
+          containers:
+            - name: pytorch
+              image: ${REPO_URI}
+              imagePullPolicy: Always
+              resources:
+                requests:
+                  nvidia.com/gpu: ${GPU_PER_NODE}
+                  vpc.amazonaws.com/efa: ${EFA_PER_NODE}
+                limits:
+                  nvidia.com/gpu: ${GPU_PER_NODE}
+                  vpc.amazonaws.com/efa: ${EFA_PER_NODE}
+              env:
+              - name: LOGLEVEL
+                value: "INFO"
+              # ---- Parallelism (consumed by conf/kimi_k2_sft.py) ----
+              - name: TENSOR_PARALLEL
+                value: "${TENSOR_PARALLEL}"
+              - name: EXPERT_PARALLEL
+                value: "${EXPERT_PARALLEL}"
+              - name: PIPELINE_PARALLEL
+                value: "${PIPELINE_PARALLEL}"
+              - name: DATA_PARALLEL
+                value: "${DATA_PARALLEL}"
+              # ---- FSx-for-Lustre paths (mounted at /fsx; consumed by the conf) ----
+              - name: FSX_ROOT
+                value: "/fsx/kimi-k2"
+              - name: KIMI_K2_HF_PATH
+                value: "/fsx/kimi-k2/hf"
+              - name: KIMI_K2_MCORE_CKPT
+                value: "/fsx/kimi-k2/mcore"
+              - name: KIMI_K2_SFT_DATA
+                value: "/fsx/kimi-k2/sft-data"
+              - name: KIMI_K2_OUTPUT_DIR
+                value: "/fsx/kimi-k2/sft-output"
+              # ---- EFA / libfabric (UCCL-EP + NCCL both ride EFA) ----
+              - name: FI_PROVIDER
+                value: "efa"
+              - name: FI_EFA_USE_DEVICE_RDMA
+                value: "1"
+              - name: FI_EFA_FORK_SAFE
+                value: "1"
+              - name: FI_LOG_LEVEL
+                value: "warn"
+              - name: FI_EFA_ENABLE_SHM_TRANSFER
+                value: "1"
+              # ---- UCCL expert-parallel ----
+              - name: PER_EXPERT_BATCHING
+                value: "1"
+              # ---- NCCL (collectives other than EP all-to-all) ----
+              - name: NCCL_DEBUG
+                value: "INFO"
+              - name: NCCL_SOCKET_IFNAME
+                value: "^docker,lo,veth"
+              # ---- Torch / NCCL watchdog + tracing ----
+              - name: TORCH_DISTRIBUTED_DEBUG
+                value: "DETAIL"
+              - name: TORCH_NCCL_ENABLE_MONITORING
+                value: "1"
+              - name: TORCH_NCCL_TRACE_BUFFER_SIZE
+                value: "20000"
+              - name: TORCH_NCCL_DUMP_ON_TIMEOUT
+                value: "1"
+              - name: TORCH_NCCL_DEBUG_INFO_TEMP_FILE
+                value: "/local/nccl_trace_rank_"
+              - name: TORCH_NCCL_ASYNC_ERROR_HANDLING
+                value: "1"
+              - name: PYTORCH_CUDA_ALLOC_CONF
+                value: "expandable_segments:True"
+              - name: CUDA_DEVICE_MAX_CONNECTIONS
+                value: "1"
+              #- name: TORCH_DIST_INIT_BARRIER
+              #  value: "1"
+              #- name: NCCL_NVLS_ENABLE
+              #  value: "0"
+              # Megatron-Bridge finetune is driven by a python ConfigContainer script,
+              # NOT Megatron-LM pretrain_gpt.py CLI flags. conf/kimi_k2_sft.py reads its
+              # inputs from the env block below (FSx paths + TENSOR_PARALLEL/EXPERT_PARALLEL/
+              # PIPELINE_PARALLEL/DATA_PARALLEL), builds the ConfigContainer, and calls
+              # megatron.bridge.training.finetune.finetune(...) under __main__. The script at
+              # /workspace/conf is supplied at runtime by the kimi-k2-sft-conf
+              # ConfigMap (NOT baked into the shared env image).
+              # TODO(validate against image): confirm the conf script path baked into the
+              # image and that its __main__ launches finetune() under torchrun (entry-point
+              # + forward_step_func symbols are validated in conf/kimi_k2_sft.py __main__).
+              command: [ "/usr/local/bin/torchrun", "--nproc_per_node=${GPU_PER_NODE}", "--nnodes=${NUM_NODES}", "/workspace/conf/kimi_k2_sft.py" ]
+              volumeMounts:
+                - name: conf
+                  mountPath: /workspace/conf
+                  readOnly: true
+                - name: shmem
+                  mountPath: /dev/shm
+                - name: local
+                  mountPath: /local
+                - name: fsx-pv
+                  mountPath: /fsx
+
+# -----------------------------------------------------------------------------
+# KAI gang scheduling (OPTIONAL but RECOMMENDED for capacity blocks)
+# -----------------------------------------------------------------------------
+# A capacity-block node group bills for all reserved GPU-hours whether or not the
+# pods are running. Without gang scheduling, KAI may admit a subset of the 32
+# pods while waiting on the rest, burning reserved hours idle. A PodGroup with
+# minMember == ${NUM_NODES} enforces all-or-nothing placement.
+#
+# To enable: uncomment this PodGroup AND the two commented lines above
+# (`schedulerName: kai-scheduler` and the `pod-group.scheduling.run.ai/name`
+# label on the Worker pod template). Apply this PodGroup in the SAME namespace as
+# the PyTorchJob.
+#
+# TODO(validate against image): confirm the KAI PodGroup apiVersion, the
+# schedulerName, and the pod-group label key in use on ml-clusters-shared-us-west-2.
+# Recent KAI uses scheduling.run.ai/v2 PodGroup + label `pod-group.scheduling.run.ai/name`.
+#
+# ---
+# apiVersion: scheduling.run.ai/v2
+# kind: PodGroup
+# metadata:
+#   name: kimi-k2-sft-pg
+# spec:
+#   minMember: ${NUM_NODES}
+#   queue: <kai-queue-name>   # set to the KAI queue for this cluster/namespace

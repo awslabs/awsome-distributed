@@ -1,0 +1,228 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Tier-B short-run PyTorchJob template for the DeepEP/UCCL-over-EFA vs NCCL
+# all-to-all token-dispatcher A/B (Kimi-K2 / DSV3-class MoE training).
+#
+# This is a SHORT-RUN variant of the main training PyTorchJob: it runs only
+# TRAIN_ITERS (= WARMUP_ITERS + MEASURE_ITERS) steps so the harness can scrape
+# Megatron's per-iteration timers, drop warmup, and report medians. It mirrors
+# the main test case manifest (kubeflow training-operator PyTorchJob, etcd
+# rendezvous, ${NUM_NODES} Worker replicas on p6-b300.48xlarge, EFA + FSx +
+# shmem) and changes ONLY the MoE token dispatcher via the MOE_DISPATCHER env
+# contract that conf/kimi_k2_sft.py (owned elsewhere) honors. Everything else is
+# held IDENTICAL across the two arms so the A/B measures the dispatcher, not a
+# confounder.
+#
+# THE A/B TOGGLE (read conf/kimi_k2_sft.py / benchmarks/README.md):
+#   MOE_DISPATCHER=alltoall -> moe_token_dispatcher_type="alltoall"  (NCCL A2A over EFA) — baseline
+#   MOE_DISPATCHER=deepep   -> moe_token_dispatcher_type="flex",
+#                              moe_flex_dispatcher_backend="deepep"   (UCCL EFA-native drop-in) — treatment
+#   MOE_A2A_OVERLAP in {on,off} -> gates --overlap-moe-expert-parallel-comm /
+#                              --delay-wgrad-compute. SET IDENTICALLY ON BOTH ARMS
+#                              in a run (overlap must never differ between arms).
+#
+# HONEST FRAMING (do not borrow a headline): there is no published
+# DeepEP-on-EFA-vs-NCCL-alltoall TRAINING number. overlap=on is the deployment
+# number and is EXPECTED SMALL (Megatron 1F1B hides up to ~93% of A2A; p6-b300's
+# 16x400G EFA = 6.4 Tbps/node = 2x the per-GPU BW of every published testbed).
+# overlap=off is the dispatcher-isolation UPPER BOUND — never present it as the
+# deployment delta. The only EFA evidence is UCCL B200/H200; none on B300.
+#
+# ---------------------------------------------------------------------------
+# HOW TO RENDER + APPLY (bare GNU envsubst — placeholders are bare ${VAR}):
+#
+#   This file uses BARE ${VAR} placeholders ONLY (no ${VAR:-default} — GNU
+#   `envsubst` does NOT honor :- defaults and would emit them literally). The
+#   runner (1.run-ab-dispatcher.sh) EXPORTS every placeholder below and then:
+#
+#     export JOB_NAME=kimi-k2-bench-deepep-on REPO_URI=159553542841.dkr.ecr.us-west-2.amazonaws.com/megatron-bridge-uccl:nemo-25.11.01-uccl-0dc87eb
+#     export NUM_NODES=32 GPU_PER_NODE=8 EFA_PER_NODE=16 INSTANCE_TYPE=p6-b300.48xlarge FSX_CLAIM=fsx-claim
+#     export TENSOR_PARALLEL=8 EXPERT_PARALLEL=32 PIPELINE_PARALLEL=8 DATA_PARALLEL=4
+#     export MOE_DISPATCHER=deepep MOE_A2A_OVERLAP=on TRAIN_ITERS=70
+#     envsubst < kimi-k2-bench-pytorchjob.yaml-template | kubectl --context shared-usw2 -n kimi-k2-bench apply -f -
+#
+#   The COMPLETE placeholder set this template exposes (and nothing else — every
+#   other $VAR the container/torchrun expands at runtime is referenced via the
+#   in-image entrypoint, never written literally here):
+#     ${JOB_NAME} ${REPO_URI} ${NUM_NODES} ${GPU_PER_NODE} ${EFA_PER_NODE}
+#     ${INSTANCE_TYPE} ${FSX_CLAIM} ${TENSOR_PARALLEL} ${EXPERT_PARALLEL}
+#     ${PIPELINE_PARALLEL} ${DATA_PARALLEL} ${MOE_DISPATCHER} ${MOE_A2A_OVERLAP}
+#     ${TRAIN_ITERS}
+#
+# PREREQUISITES:
+#   - kubeflow training-operator installed (provides PyTorchJob kubeflow.org/v1).
+#   - An etcd rendezvous Service named `etcd` (port 2379) reachable in the
+#     namespace before this job is applied; with rdzvBackend=etcd the workers
+#     cannot form rendezvous without it (the main test-case manifest deploys an
+#     etcd Service/Deployment for exactly this). # TODO(validate against image):
+#     confirm the etcd Service name on this cluster.
+#   - ${NUM_NODES}x ${INSTANCE_TYPE} Ready on the Tier-B capacity block; verify:
+#       kubectl --context shared-usw2 get nodes -l capacity-reservation=4ff6b84d
+#   - FSx PVC ${FSX_CLAIM} bound (shared cluster claim) mounting at /fsx.
+#   - Image ${REPO_URI} present in ECR (159553542841, us-west-2).
+# ---------------------------------------------------------------------------
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  # kimi-k2-bench-<dispatcher>-<overlap>, e.g. kimi-k2-bench-deepep-on.
+  name: ${JOB_NAME}
+  labels:
+    app: kimi-k2-bench
+    moe-dispatcher: "${MOE_DISPATCHER}"
+    moe-a2a-overlap: "${MOE_A2A_OVERLAP}"
+spec:
+  # etcd rendezvous (TorchElastic). Worker-only topology: ${NUM_NODES} Workers x
+  # ${GPU_PER_NODE} B300 = 256 GPUs (TP8*PP8*DP4 = 256). The operator injects
+  # PET_* env into each Worker so torchrun discovers the rendezvous
+  # automatically; conf/kimi_k2_sft.py stays flagless (env-driven).
+  elasticPolicy:
+    rdzvBackend: etcd
+    rdzvHost: etcd
+    rdzvPort: 2379
+    # Fixed-size A/B (no autoscaling): min == max == nodes so every run is the
+    # same 256-GPU shape. Bench short-run: keep restarts tight to fail fast.
+    minReplicas: ${NUM_NODES}
+    maxReplicas: ${NUM_NODES}
+    maxRestarts: 0
+  runPolicy:
+    # Short benchmark run: do not retry a failed arm silently (a crash usually
+    # means EFA fell back to sockets or a config mismatch — investigate, re-run).
+    backoffLimit: 0
+    cleanPodPolicy: None
+  pytorchReplicaSpecs:
+    Worker:
+      # ${NUM_NODES} Workers x ${GPU_PER_NODE} B300 = 256 GPUs. TENSOR_PARALLEL=8
+      # EXPERT_PARALLEL=32 PIPELINE_PARALLEL=8 DATA_PARALLEL=4. EP=32 spans 4 nodes.
+      replicas: ${NUM_NODES}
+      restartPolicy: OnFailure
+      template:
+        metadata:
+          labels:
+            app: kimi-k2-bench
+            moe-dispatcher: "${MOE_DISPATCHER}"
+            moe-a2a-overlap: "${MOE_A2A_OVERLAP}"
+        spec:
+          # Pin to the instance type. NOTE: instance-type selector + the CB
+          # tolerations below admit (but do not strictly PIN to) one capacity
+          # block — fine when every p6-b300 node in this cluster is a CB node. If
+          # multiple p6-b300 CB blocks coexist, add a
+          # `capacity-reservation: "<short>"` nodeSelector to pin hard.
+          # # TODO(validate against image): confirm only one p6-b300 CB block is schedulable.
+          nodeSelector:
+            node.kubernetes.io/instance-type: "${INSTANCE_TYPE}"
+          tolerations:
+            # CB managed-node-group taints (modules/cb-node-group):
+            #   nvidia.com/gpu=true, workload=bench, capacity-reservation=<short>.
+            - key: nvidia.com/gpu
+              operator: Exists
+              effect: NoSchedule
+            - key: workload
+              operator: Equal
+              value: bench
+              effect: NoSchedule
+            - key: capacity-reservation
+              operator: Exists
+              effect: NoSchedule
+          containers:
+            - name: pytorch
+              image: ${REPO_URI}
+              imagePullPolicy: IfNotPresent
+              env:
+                # ---- EFA / NCCL (held FIXED across both arms) ----------------
+                # FI_PROVIDER pinned to efa (NOT a placeholder): the confounder
+                # guard asserts "NET/OFI Selected Provider is efa" in the logs and
+                # discards the run on socket-fallback.
+                - name: FI_PROVIDER
+                  value: efa
+                - name: FI_EFA_FORK_SAFE
+                  value: "1"
+                # NCCL_DEBUG=INFO + SUBSYS INIT,NET make aws-ofi-nccl emit the
+                # "NET/OFI Selected Provider is efa" line the guard greps for.
+                - name: NCCL_DEBUG
+                  value: INFO
+                - name: NCCL_DEBUG_SUBSYS
+                  value: "INIT,NET"
+                # ---- A/B toggles (read by conf/kimi_k2_sft.py) ---------------
+                # alltoall -> moe_token_dispatcher_type=alltoall (NCCL A2A/EFA);
+                # deepep   -> flex + moe_flex_dispatcher_backend=deepep (UCCL EFA).
+                - name: MOE_DISPATCHER
+                  value: "${MOE_DISPATCHER}"
+                # Gates --overlap-moe-expert-parallel-comm / --delay-wgrad-compute.
+                # IDENTICAL on both arms in a run. on=deployment number (small),
+                # off=dispatcher-isolation upper bound. conf/kimi_k2_sft.py treats
+                # it as ON iff the value == "on".
+                - name: MOE_A2A_OVERLAP
+                  value: "${MOE_A2A_OVERLAP}"
+                # Total iters = WARMUP_ITERS (dropped) + MEASURE_ITERS (median).
+                # Short run: 20 + 50 = 70 by default.
+                - name: TRAIN_ITERS
+                  value: "${TRAIN_ITERS}"
+                # ---- Parallelism (held FIXED across both arms) ---------------
+                # TP8/EP32/PP8/DP4 = 256 GPUs. conf/kimi_k2_sft.py reads these.
+                # # TODO(validate against image): confirm conf/kimi_k2_sft.py
+                # #   reads these env names (vs reading them only from CLI flags).
+                - name: TENSOR_PARALLEL
+                  value: "${TENSOR_PARALLEL}"
+                - name: EXPERT_PARALLEL
+                  value: "${EXPERT_PARALLEL}"
+                - name: PIPELINE_PARALLEL
+                  value: "${PIPELINE_PARALLEL}"
+                - name: DATA_PARALLEL
+                  value: "${DATA_PARALLEL}"
+                # ---- FSx paths (held FIXED across both arms) -----------------
+                # FSx PVC ${FSX_CLAIM} mounts at /fsx; layout:
+                #   /fsx/kimi-k2/{hf,mcore,sft-data,sft-output}; bench -> .../bench
+                - name: FSX_ROOT
+                  value: "/fsx/kimi-k2"
+                - name: KIMI_K2_HF_PATH
+                  value: "/fsx/kimi-k2/hf"
+                - name: KIMI_K2_MCORE_CKPT
+                  value: "/fsx/kimi-k2/mcore"
+                - name: KIMI_K2_SFT_DATA
+                  value: "/fsx/kimi-k2/sft-data"
+                - name: KIMI_K2_OUTPUT_DIR
+                  value: "/fsx/kimi-k2/sft-output"
+              command:
+                - torchrun
+                # nproc_per_node = GPUs/node (8 B300); nnodes = Worker replicas.
+                # rdzv_* are supplied by the operator via PET_* env (elasticPolicy
+                # above); the in-image entrypoint reads them. conf/kimi_k2_sft.py
+                # is fully env-driven (no CLI flags): it reads MOE_DISPATCHER /
+                # MOE_A2A_OVERLAP / TRAIN_ITERS / the parallelism + FSx env above.
+                # # TODO(validate against image): confirm the in-image path of
+                # # conf/kimi_k2_sft.py.
+                - --nproc_per_node=${GPU_PER_NODE}
+                - --nnodes=${NUM_NODES}
+                - /workspace/conf/kimi_k2_sft.py
+              resources:
+                # p6-b300.48xlarge: 8 B300 GPUs, 16 EFA interfaces (16x400G).
+                limits:
+                  nvidia.com/gpu: ${GPU_PER_NODE}
+                  vpc.amazonaws.com/efa: ${EFA_PER_NODE}
+                requests:
+                  nvidia.com/gpu: ${GPU_PER_NODE}
+                  vpc.amazonaws.com/efa: ${EFA_PER_NODE}
+              volumeMounts:
+                - name: conf
+                  mountPath: /workspace/conf
+                  readOnly: true
+                - name: shmem
+                  mountPath: /dev/shm
+                - name: fsx
+                  mountPath: /fsx
+          volumes:
+            # Per-model SFT config (kimi_k2_sft.py) mounted at /workspace/conf,
+            # supplied by the kimi-k2-sft-conf ConfigMap (create it first — see
+            # kubernetes/README.md); NOT baked into the shared env image.
+            - name: conf
+              configMap:
+                name: kimi-k2-sft-conf
+            # Large /dev/shm for NCCL/UCCL shared-host buffers and dataloader.
+            - name: shmem
+              hostPath:
+                path: /dev/shm
+            # FSx for Lustre: models, data, and bench outputs (/fsx/kimi-k2/bench).
+            - name: fsx
+              persistentVolumeClaim:
+                claimName: ${FSX_CLAIM}
