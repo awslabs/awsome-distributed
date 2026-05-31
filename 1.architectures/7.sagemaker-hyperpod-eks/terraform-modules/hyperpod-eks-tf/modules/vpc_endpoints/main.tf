@@ -4,9 +4,9 @@ data "aws_region" "current" {}
 resource "aws_vpc_endpoint" "s3" {
   count = var.create_s3_endpoint ? 1 : 0
 
-  vpc_id       = var.vpc_id
-  service_name = "com.amazonaws.${data.aws_region.current.region}.s3"
-  route_table_ids = var.private_route_table_ids
+  vpc_id            = var.vpc_id
+  service_name      = "com.amazonaws.${data.aws_region.current.region}.s3"
+  route_table_ids   = var.private_route_table_ids
   vpc_endpoint_type = "Gateway"
 
   policy = jsonencode({
@@ -35,9 +35,9 @@ resource "aws_vpc_endpoint" "ec2" {
   subnet_ids          = var.private_subnet_ids
   security_group_ids  = [var.security_group_id]
   private_dns_enabled = true
-  
+
   tags = {
-    Name = "${var.resource_name_prefix}-ec2-vpc-endpoint"
+    Name        = "${var.resource_name_prefix}-ec2-vpc-endpoint"
     Description = "CRITICAL for AWS CNI plugin"
   }
 }
@@ -51,7 +51,7 @@ resource "aws_vpc_endpoint" "ecr_api" {
   subnet_ids          = var.private_subnet_ids
   security_group_ids  = [var.security_group_id]
   private_dns_enabled = true
-  
+
   tags = {
     Name = "${var.resource_name_prefix}-ecr-api-vpc-endpoint"
   }
@@ -66,7 +66,7 @@ resource "aws_vpc_endpoint" "ecr_dkr" {
   subnet_ids          = var.private_subnet_ids
   security_group_ids  = [var.security_group_id]
   private_dns_enabled = true
-  
+
   tags = {
     Name = "${var.resource_name_prefix}-ecr-dkr-vpc-endpoint"
   }
@@ -81,7 +81,7 @@ resource "aws_vpc_endpoint" "sts" {
   subnet_ids          = var.private_subnet_ids
   security_group_ids  = [var.security_group_id]
   private_dns_enabled = true
-  
+
   tags = {
     Name = "${var.resource_name_prefix}-sts-vpc-endpoint"
   }
@@ -96,7 +96,7 @@ resource "aws_vpc_endpoint" "logs" {
   subnet_ids          = var.private_subnet_ids
   security_group_ids  = [var.security_group_id]
   private_dns_enabled = true
-  
+
   tags = {
     Name = "${var.resource_name_prefix}-logs-vpc-endpoint"
   }
@@ -111,7 +111,7 @@ resource "aws_vpc_endpoint" "monitoring" {
   subnet_ids          = var.private_subnet_ids
   security_group_ids  = [var.security_group_id]
   private_dns_enabled = true
-  
+
   tags = {
     Name = "${var.resource_name_prefix}-monitoring-vpc-endpoint"
   }
@@ -127,7 +127,7 @@ resource "aws_vpc_endpoint" "ssm" {
   subnet_ids          = var.private_subnet_ids
   security_group_ids  = [var.security_group_id]
   private_dns_enabled = true
-  
+
   tags = {
     Name = "${var.resource_name_prefix}-ssm-vpc-endpoint"
   }
@@ -142,7 +142,7 @@ resource "aws_vpc_endpoint" "ssmmessages" {
   subnet_ids          = var.private_subnet_ids
   security_group_ids  = [var.security_group_id]
   private_dns_enabled = true
-  
+
   tags = {
     Name = "${var.resource_name_prefix}-ssmmessages-vpc-endpoint"
   }
@@ -157,7 +157,7 @@ resource "aws_vpc_endpoint" "ec2messages" {
   subnet_ids          = var.private_subnet_ids
   security_group_ids  = [var.security_group_id]
   private_dns_enabled = true
-  
+
   tags = {
     Name = "${var.resource_name_prefix}-ec2messages-vpc-endpoint"
   }
@@ -173,9 +173,9 @@ resource "aws_vpc_endpoint" "eks_auth" {
   subnet_ids          = var.private_subnet_ids
   security_group_ids  = [var.security_group_id]
   private_dns_enabled = true
-  
+
   tags = {
-    Name = "${var.resource_name_prefix}-eks-auth-vpc-endpoint"
+    Name        = "${var.resource_name_prefix}-eks-auth-vpc-endpoint"
     Description = "CRITICAL for EKS Pod Identity authentication"
   }
 }
@@ -190,7 +190,7 @@ resource "aws_vpc_endpoint" "lambda" {
   subnet_ids          = var.private_subnet_ids
   security_group_ids  = [var.security_group_id]
   private_dns_enabled = true
-  
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -216,7 +216,7 @@ resource "aws_vpc_endpoint" "sqs" {
   subnet_ids          = var.private_subnet_ids
   security_group_ids  = [var.security_group_id]
   private_dns_enabled = true
-  
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [

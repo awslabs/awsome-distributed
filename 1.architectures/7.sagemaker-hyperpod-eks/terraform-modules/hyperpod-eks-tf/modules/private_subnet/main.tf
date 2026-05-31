@@ -22,7 +22,7 @@ resource "aws_subnet" "private" {
   vpc_id               = var.vpc_id
   cidr_block           = var.private_subnet_cidrs[count.index]
   availability_zone_id = data.aws_availability_zones.available.zone_ids[count.index]
-  
+
   # Ensure the subnet is created after the CIDR block is associated
   depends_on = [aws_vpc_ipv4_cidr_block_association.additional_cidr]
 

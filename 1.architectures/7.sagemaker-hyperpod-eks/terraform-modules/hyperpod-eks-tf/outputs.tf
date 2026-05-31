@@ -71,7 +71,7 @@ output "s3_bucket_name" {
 
 output "s3_bucket_arn" {
   description = "ARN of the S3 bucket"
-  value = !local.rig_mode ? (var.create_s3_bucket_module ? module.s3_bucket[0].s3_bucket_arn : (var.existing_s3_bucket_name != "" ? data.aws_s3_bucket.existing_s3_bucket[0].arn : null)) : null
+  value       = !local.rig_mode ? (var.create_s3_bucket_module ? module.s3_bucket[0].s3_bucket_arn : (var.existing_s3_bucket_name != "" ? data.aws_s3_bucket.existing_s3_bucket[0].arn : null)) : null
 }
 
 # S3 VPC Endpoints Outputs

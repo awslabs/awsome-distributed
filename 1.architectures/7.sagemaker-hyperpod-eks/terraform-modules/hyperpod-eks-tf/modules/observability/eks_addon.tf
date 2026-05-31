@@ -8,7 +8,7 @@ resource "aws_eks_addon" "hyperpod_observability_basic" {
   cluster_name                = var.eks_cluster_name
   addon_name                  = "amazon-sagemaker-hyperpod-observability"
   resolve_conflicts_on_update = "OVERWRITE"
-  
+
   configuration_values = jsonencode({
     ampWorkspace = {
       prometheusEndpoint = local.prometheus_workspace_endpoint
@@ -74,7 +74,7 @@ resource "aws_eks_addon" "hyperpod_observability_basic" {
 # Use terraform_data to update addon configuration when Grafana is ready
 resource "terraform_data" "addon_update_with_grafana" {
   count = local.is_amg_allowed ? 1 : 0
-  
+
   input = {
     cluster_name = var.eks_cluster_name
     addon_name   = "amazon-sagemaker-hyperpod-observability"
@@ -85,7 +85,7 @@ resource "terraform_data" "addon_update_with_grafana" {
       }
       amgWorkspace = {
         workspaceName = local.grafana_workspace_name
-        arn          = local.grafana_workspace_arn
+        arn           = local.grafana_workspace_arn
       }
       metricsProvider = {
         trainingMetrics = {
@@ -126,7 +126,7 @@ resource "terraform_data" "addon_update_with_grafana" {
       }
     })
   }
-  
+
   provisioner "local-exec" {
     command = <<-EOT
       aws eks update-addon \
@@ -137,7 +137,7 @@ resource "terraform_data" "addon_update_with_grafana" {
         --region ${var.aws_region}
     EOT
   }
-  
+
   depends_on = [
     aws_eks_addon.hyperpod_observability_basic,
     aws_grafana_workspace.hyperpod

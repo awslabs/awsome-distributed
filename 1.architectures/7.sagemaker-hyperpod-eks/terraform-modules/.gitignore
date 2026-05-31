@@ -32,3 +32,6 @@ terraform.rc
 # Ignore environment variables 
 env_vars.sh
 terraform_outputs.json
+
+# Ignore agent working docs
+docs/

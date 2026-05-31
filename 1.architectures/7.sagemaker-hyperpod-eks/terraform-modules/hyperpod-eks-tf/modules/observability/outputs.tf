@@ -9,7 +9,7 @@ output "prometheus_vpc_endpoint_id" {
 }
 
 output "prometheus_workspace_name" {
-  description = "Prometheus Workspace Name"  
+  description = "Prometheus Workspace Name"
   value       = local.prometheus_workspace_name
 }
 
@@ -56,7 +56,7 @@ output "grafana_workspace_endpoint" {
 }
 
 output "grafana_service_account_token" {
-  value = local.is_amg_allowed ? aws_grafana_workspace_service_account_token.hyperpod[0].key : null
+  value     = local.is_amg_allowed ? aws_grafana_workspace_service_account_token.hyperpod[0].key : null
   sensitive = true
 }
 

@@ -30,8 +30,8 @@ resource "aws_iam_role" "sagemaker_execution_role" {
 
 # Attach Managed IAM Policy to the IAM Role
 resource "aws_iam_role_policy_attachment" "sagemaker_managed_policy_attachment" {
-    role = aws_iam_role.sagemaker_execution_role.name
-    policy_arn = "arn:aws:iam::aws:policy/AmazonSageMakerClusterInstanceRolePolicy"
+  role       = aws_iam_role.sagemaker_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSageMakerClusterInstanceRolePolicy"
 }
 
 # Custom EKS CNI IAM Policy 
@@ -71,12 +71,12 @@ resource "aws_iam_policy" "eks_cni_policy" {
       }
     ]
   })
-} 
+}
 
 # Attach Custom EKS CNI Policy to the IAM Role
 resource "aws_iam_role_policy_attachment" "eks_cni_policy_attachment" {
-    role = aws_iam_role.sagemaker_execution_role.name
-    policy_arn = aws_iam_policy.eks_cni_policy.arn
+  role       = aws_iam_role.sagemaker_execution_role.name
+  policy_arn = aws_iam_policy.eks_cni_policy.arn
 }
 
 # Custom IAM Policy
@@ -133,19 +133,19 @@ resource "aws_iam_policy" "sagemaker_execution_policy" {
         ]
         Resource = var.eks_cluster_arn
       }
-    ],
-    !var.rig_mode ? [
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:ListBucket",
-          "s3:GetObject"
-        ]
-        Resource = [
-          "arn:aws:s3:::${var.s3_bucket_name}",
-          "arn:aws:s3:::${var.s3_bucket_name}/*"
-        ]
-      }
+      ],
+      !var.rig_mode ? [
+        {
+          Effect = "Allow"
+          Action = [
+            "s3:ListBucket",
+            "s3:GetObject"
+          ]
+          Resource = [
+            "arn:aws:s3:::${var.s3_bucket_name}",
+            "arn:aws:s3:::${var.s3_bucket_name}/*"
+          ]
+        }
     ] : [])
   })
 
@@ -160,9 +160,9 @@ resource "aws_iam_role_policy_attachment" "sagemaker_execution_policy_attachment
 
 # Rig IAM Policy
 resource "aws_iam_policy" "rig_policy" {
-  count = var.rig_mode ? 1 : 0 
-  name = "${var.resource_name_prefix}-RigPolicy-${data.aws_region.current.region}"
-  path = "/"
+  count = var.rig_mode ? 1 : 0
+  name  = "${var.resource_name_prefix}-RigPolicy-${data.aws_region.current.region}"
+  path  = "/"
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = concat(
@@ -181,8 +181,8 @@ resource "aws_iam_policy" "rig_policy" {
       ],
       var.rig_rft_lambda_access ? [
         {
-          Effect = "Allow"
-          Action =  "lambda:InvokeFunction"
+          Effect   = "Allow"
+          Action   = "lambda:InvokeFunction"
           Resource = "arn:aws:lambda:*:*:function:*SageMaker*"
         }
       ] : [],
@@ -262,7 +262,7 @@ resource "aws_iam_policy" "subnet_policy" {
       }
     ]
   })
-} 
+}
 
 # Attach Subnet IAM Policy to the IAM Role
 resource "aws_iam_role_policy_attachment" "sagemaker_subnet_policy_attachment" {
@@ -295,7 +295,7 @@ resource "aws_iam_policy" "sg_policy" {
       }
     ]
   })
-} 
+}
 
 # Attach Security Group IAM Policy to the IAM Role
 resource "aws_iam_role_policy_attachment" "sagemaker_sg_policy_attachment" {
@@ -306,8 +306,8 @@ resource "aws_iam_role_policy_attachment" "sagemaker_sg_policy_attachment" {
 # Cluster IAM Role for Karpenter Autoscaling
 resource "aws_iam_role" "karpenter_role" {
   count = !var.rig_mode && var.karpenter_autoscaling ? 1 : 0
-  name = "${var.resource_name_prefix}-SMHP-Karpenter-Role-${data.aws_region.current.region}"
-  path = "/"
+  name  = "${var.resource_name_prefix}-SMHP-Karpenter-Role-${data.aws_region.current.region}"
+  path  = "/"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -328,13 +328,13 @@ resource "aws_iam_role" "karpenter_role" {
 # Karpenter Custom IAM Policy
 resource "aws_iam_policy" "karpenter_policy" {
   count = !var.rig_mode && var.karpenter_autoscaling ? 1 : 0
-  name = "${var.resource_name_prefix}-SMHP-Karpenter-Policy-${data.aws_region.current.region}"
-  path = "/"
+  name  = "${var.resource_name_prefix}-SMHP-Karpenter-Policy-${data.aws_region.current.region}"
+  path  = "/"
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-     {
+      {
         Effect = "Allow"
         Action = [
           "sagemaker:BatchAddClusterNodes",
@@ -382,7 +382,7 @@ resource "aws_iam_policy" "karpenter_policy" {
 
 # Attach Custom IAM Policy to the IAM Role
 resource "aws_iam_role_policy_attachment" "karpenter_policy_attachment" {
-  count = !var.rig_mode && var.karpenter_autoscaling ? 1 : 0
+  count      = !var.rig_mode && var.karpenter_autoscaling ? 1 : 0
   role       = aws_iam_role.karpenter_role[0].name
   policy_arn = aws_iam_policy.karpenter_policy[0].arn
 }

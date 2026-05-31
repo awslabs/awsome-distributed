@@ -1,7 +1,7 @@
 data "aws_region" "current" {}
 
 locals {
-    wait_for_fsx_csi_driver = var.create_new_filesystem || var.inference_operator_enabled
+  wait_for_fsx_csi_driver = var.create_new_filesystem || var.inference_operator_enabled
 }
 
 # IAM role for FSx CSI driver
@@ -32,8 +32,8 @@ resource "aws_iam_role_policy_attachment" "fsx_csi_driver_policy" {
 
 # FSx CSI driver addon
 resource "aws_eks_addon" "fsx_lustre_csi_driver" {
-  cluster_name             = var.eks_cluster_name
-  addon_name               = "aws-fsx-csi-driver"
+  cluster_name                = var.eks_cluster_name
+  addon_name                  = "aws-fsx-csi-driver"
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
 

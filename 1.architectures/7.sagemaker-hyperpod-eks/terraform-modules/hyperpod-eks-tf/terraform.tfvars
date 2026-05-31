@@ -75,3 +75,11 @@ instance_groups = [
     lifecycle_script          = "on_create.sh"
   }
 ]
+
+# ==========================================
+# Cilium CNI (optional)
+# ==========================================
+# enable_cilium = true
+# cilium_mode   = "overlay"  # Options: overlay, chaining, custom
+# cilium_version = "1.19.4"
+# cilium_helm_values = {}    # Custom values merged on top of mode defaults

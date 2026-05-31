@@ -1,7 +1,7 @@
 
 resource "aws_iam_role" "inference_operator" {
   name_prefix = "SageMakerHyperPodInferenceRole-"
-  path = "/"
+  path        = "/"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -133,13 +133,13 @@ resource "aws_iam_role_policy_attachment" "jumpstart_gated" {
 
 resource "aws_iam_policy" "alb_controller" {
   name = "${var.resource_name_prefix}-LB-Controller-Policy"
-  
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = ["iam:CreateServiceLinkedRole"]
+        Effect   = "Allow"
+        Action   = ["iam:CreateServiceLinkedRole"]
         Resource = "*"
         Condition = {
           StringEquals = {
@@ -214,13 +214,13 @@ resource "aws_iam_policy" "alb_controller" {
         Resource = "*"
       },
       {
-        Effect = "Allow"
-        Action = ["ec2:CreateSecurityGroup"]
+        Effect   = "Allow"
+        Action   = ["ec2:CreateSecurityGroup"]
         Resource = "*"
       },
       {
-        Effect = "Allow"
-        Action = ["ec2:CreateTags"]
+        Effect   = "Allow"
+        Action   = ["ec2:CreateTags"]
         Resource = "arn:aws:ec2:*:*:security-group/*"
         Condition = {
           StringEquals = {
@@ -240,7 +240,7 @@ resource "aws_iam_policy" "alb_controller" {
         Resource = "arn:aws:ec2:*:*:security-group/*"
         Condition = {
           "Null" = {
-            "aws:RequestTag/elbv2.k8s.aws/cluster" = "true"
+            "aws:RequestTag/elbv2.k8s.aws/cluster"  = "true"
             "aws:ResourceTag/elbv2.k8s.aws/cluster" = "false"
           }
         }
@@ -295,7 +295,7 @@ resource "aws_iam_policy" "alb_controller" {
         ]
         Condition = {
           "Null" = {
-            "aws:RequestTag/elbv2.k8s.aws/cluster" = "true"
+            "aws:RequestTag/elbv2.k8s.aws/cluster"  = "true"
             "aws:ResourceTag/elbv2.k8s.aws/cluster" = "false"
           }
         }
@@ -415,7 +415,7 @@ resource "aws_iam_role_policy_attachment" "alb_controller" {
 resource "aws_iam_policy" "s3_csi" {
   count = var.enable_s3_csi_driver ? 1 : 0
   name  = "${var.resource_name_prefix}-S3-Mountpoint-Policy"
-  
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [

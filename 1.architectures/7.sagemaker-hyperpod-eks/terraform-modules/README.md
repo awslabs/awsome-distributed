@@ -593,6 +593,78 @@ By default, the FSx for Lustre module installs the Amazon FSx for Lustre Contain
 
 ---
 
+## Cilium CNI (Optional)
+
+You can replace the default AWS VPC CNI with [Cilium](https://cilium.io) by setting `enable_cilium = true`. This supports two pre-configured modes plus a fully custom option:
+
+| Mode | Description | VPC CNI |
+|------|-------------|---------|
+| `overlay` | VXLAN tunnel, non-VPC-routable pod IPs, highest pod density | Removed |
+| `chaining` | VPC CNI handles networking, Cilium adds eBPF policy/LB | Kept |
+| `custom` | User provides all Helm values, no defaults applied | Removed |
+
+### New EKS Cluster with Cilium
+
+```hcl
+enable_cilium  = true
+cilium_mode    = "overlay"
+cilium_version = "1.19.4"
+
+# Optional: override specific Helm values on top of mode defaults
+cilium_helm_values = {
+  hubble = {
+    enabled = true
+  }
+}
+```
+
+### Existing EKS Cluster with Cilium Already Installed
+
+If you are integrating HyperPod with an existing EKS cluster that already has Cilium running:
+
+```hcl
+create_eks_module = false
+existing_eks_cluster_name = "my-cilium-cluster"
+enable_cilium = true
+cilium_mode   = "overlay"  # Match your existing Cilium configuration
+```
+
+Setting `enable_cilium = true` with `create_eks_module = false` will:
+- Skip Cilium deployment (it's already on your cluster)
+- Add appropriate security group rules (e.g., VXLAN UDP 8472 for overlay mode)
+- Skip VPC CNI addon creation
+
+### Custom Mode
+
+For full control over the Cilium Helm chart configuration:
+
+```hcl
+enable_cilium = true
+cilium_mode   = "custom"
+cilium_helm_values = {
+  routingMode = "tunnel"
+  tunnelProtocol = "vxlan"
+  ipam = {
+    mode = "cluster-pool"
+  }
+  hubble = {
+    enabled = true
+    relay = {
+      enabled = true
+    }
+  }
+}
+```
+
+### Limitations
+
+- **Closed network:** Cilium images must be pre-staged to ECR in closed-network deployments.
+- **ENI mode not supported:** Cilium's native ENI mode is incompatible with HyperPod because SageMaker-managed instances are not visible in the EC2 API. Use `overlay` or `chaining` instead.
+- **Overlay mode:** Pod-to-VPC traffic is SNATed. Webhooks must be host-networked or exposed via Service/Ingress.
+- **Chaining mode:** Some Cilium features limited (L7 policy, IPsec encryption).
+
+---
+
 ### Amazon GuardDuty EKS Runtime Monitoring
 If your target account has [Amazon GuardDuty EKS Runtime Monitoring](https://docs.aws.amazon.com/guardduty/latest/ug/runtime-monitoring.html) enabled, an interface VPC endpoint is automatically created to allow the security agent to deliver events to GuardDuty while event data remains within the AWS network. Because this VPC endpoint is not managed by Terraform, the associated Elastic Network Interfaces (ENIs) and Security Group that are automatically deployed by GuardDuty can block destruction when you are ready to clean up. To mitigate this, we've included an optional GuardDuty cleanup script [guardduty-cleanup.sh](./hyperpod-eks-tf/scripts/guardduty-cleanup.sh) that is invoked only at destruction time using a Terraform `null_resource`. This script finds the GuardDuty VPC endpoint associated with your HyperPod VPC and deletes it, waits for the associated ENIs to be cleaned up, then deletes the associated Security Group. To enable this script at plan and apply time, simply add the parameter `enable_guardduty_cleanup = true` to your `custom.tfvars` file. This script won't run when you issue a `terraform apply` command, but will run when you issue a `terraform destroy` command. 
 

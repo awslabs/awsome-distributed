@@ -6,7 +6,7 @@ data "aws_eks_cluster" "existing_eks_cluster" {
 }
 
 data "aws_s3_bucket" "existing_s3_bucket" {
-  count  =  var.create_s3_bucket_module ? 0 : (var.existing_s3_bucket_name != "" ? 1 : 0)
+  count  = var.create_s3_bucket_module ? 0 : (var.existing_s3_bucket_name != "" ? 1 : 0)
   bucket = var.existing_s3_bucket_name
 }
 
@@ -16,9 +16,9 @@ data "aws_subnet" "existing_private_subnets" {
   id    = var.existing_private_subnet_ids[count.index]
 }
 
-locals { 
+locals {
   # Generate az_to_subnet_map for existing subnets
-  az_to_subnet_map = var.create_private_subnet_module ? module.private_subnet[0].az_to_subnet_map : zipmap(data.aws_subnet.existing_private_subnets[*].availability_zone_id,data.aws_subnet.existing_private_subnets[*].id)
+  az_to_subnet_map = var.create_private_subnet_module ? module.private_subnet[0].az_to_subnet_map : zipmap(data.aws_subnet.existing_private_subnets[*].availability_zone_id, data.aws_subnet.existing_private_subnets[*].id)
 
   # AMP allowed regions for observability
   amp_allowed_regions = [
@@ -42,6 +42,10 @@ locals {
   eks_private_subnet_cidrs = [var.eks_private_subnet_1_cidr, var.eks_private_subnet_2_cidr]
   enable_guardduty_cleanup = var.enable_guardduty_cleanup && (var.create_vpc_module || var.create_private_subnet_module || var.create_eks_module)
 
+  # Cilium CNI
+  skip_vpc_cni  = var.enable_cilium && var.cilium_mode != "chaining"
+  create_cilium = var.enable_cilium && var.create_eks_module
+
   # Features that require waiting for nodes
   features_requiring_nodes = [
     var.create_hyperpod_training_operator_module,
@@ -50,14 +54,14 @@ locals {
     var.create_task_governance_module,
     var.create_fsx_module
   ]
-  
+
   # Disabled feature set for RIGs
   rig_mode                                  = length(var.restricted_instance_groups) > 0
   instance_groups                           = !local.rig_mode ? var.instance_groups : []
   create_s3_bucket_module                   = !local.rig_mode && var.create_s3_bucket_module
   s3_bucket_name                            = !local.rig_mode ? (var.create_s3_bucket_module ? module.s3_bucket[0].s3_bucket_name : var.existing_s3_bucket_name) : null
   create_lifecycle_script_module            = !local.rig_mode && var.create_lifecycle_script_module
-  enable_cert_manager                       = !local.rig_mode && var.enable_cert_manager && (var.create_hyperpod_training_operator_module || var.create_hyperpod_inference_operator_module) 
+  enable_cert_manager                       = !local.rig_mode && var.enable_cert_manager && (var.create_hyperpod_training_operator_module || var.create_hyperpod_inference_operator_module)
   wait_for_nodes                            = !local.rig_mode && anytrue(local.features_requiring_nodes)
   create_fsx_module                         = !local.rig_mode ? var.create_fsx_module : false
   create_task_governance_module             = !local.rig_mode && var.create_task_governance_module
@@ -92,11 +96,12 @@ module "security_group" {
   count  = var.create_security_group_module ? 1 : 0
   source = "./modules/security_group"
 
-  resource_name_prefix            = var.resource_name_prefix
-  vpc_id                          = local.vpc_id
-  create_new_sg                   = var.create_eks_module
-  existing_security_group_id      = var.existing_security_group_id
+  resource_name_prefix             = var.resource_name_prefix
+  vpc_id                           = local.vpc_id
+  create_new_sg                    = var.create_eks_module
+  existing_security_group_id       = var.existing_security_group_id
   create_vpc_endpoint_ingress_rule = var.create_vpc_endpoint_ingress_rule
+  enable_vxlan_rule                = var.enable_cilium && var.cilium_mode == "overlay"
 }
 
 module "eks_cluster" {
@@ -114,6 +119,19 @@ module "eks_cluster" {
   nat_gateway_id          = local.nat_gateway_id
   endpoint_private_access = var.eks_endpoint_private_access
   endpoint_public_access  = var.eks_endpoint_public_access
+  skip_vpc_cni            = local.skip_vpc_cni
+}
+
+module "cilium" {
+  count  = local.create_cilium ? 1 : 0
+  source = "./modules/cilium"
+
+  eks_cluster_name   = module.eks_cluster[0].eks_cluster_name
+  cilium_mode        = var.cilium_mode
+  cilium_version     = var.cilium_version
+  cilium_helm_values = var.cilium_helm_values
+
+  depends_on = [module.eks_cluster]
 }
 
 module "s3_bucket" {
@@ -135,7 +153,7 @@ module "vpc_endpoints" {
   rig_mode                = local.rig_mode
   rig_rft_lambda_access   = var.rig_rft_lambda_access
   rig_rft_sqs_access      = var.rig_rft_sqs_access
-  
+
   # Closed Network - VPC Endpoint Configuration
   create_s3_endpoint          = var.create_s3_endpoint
   create_ec2_endpoint         = var.create_ec2_endpoint
@@ -150,7 +168,7 @@ module "vpc_endpoints" {
   create_eks_auth_endpoint    = var.create_eks_auth_endpoint
 
   depends_on = [
-    module.private_subnet, 
+    module.private_subnet,
     module.security_group
   ]
 }
@@ -195,7 +213,7 @@ module "helm_chart" {
   eks_cluster_name                    = local.eks_cluster_name
   enable_gpu_operator                 = var.enable_gpu_operator
   enable_mlflow                       = var.enable_mlflow
-  enable_kubeflow_training_operators  = var.enable_kubeflow_training_operators 
+  enable_kubeflow_training_operators  = var.enable_kubeflow_training_operators
   enable_cluster_role_and_bindings    = var.enable_cluster_role_and_bindings
   enable_namespaced_role_and_bindings = var.enable_namespaced_role_and_bindings
   enable_team_role_and_bindings       = var.enable_team_role_and_bindings
@@ -204,11 +222,11 @@ module "helm_chart" {
   enable_mpi_operator                 = var.enable_mpi_operator
   enable_deep_health_check            = var.enable_deep_health_check
   enable_job_auto_restart             = var.enable_job_auto_restart
-  enable_hyperpod_patching            = var.enable_hyperpod_patching 
+  enable_hyperpod_patching            = var.enable_hyperpod_patching
   rig_script_path                     = var.rig_script_path
   rig_mode                            = local.rig_mode
 
-  depends_on = [module.eks_cluster]
+  depends_on = [module.eks_cluster, module.cilium]
 }
 
 module "hyperpod_cluster" {
@@ -230,7 +248,7 @@ module "hyperpod_cluster" {
   rig_mode                     = local.rig_mode
   karpenter_autoscaling        = var.karpenter_autoscaling
   continuous_provisioning_mode = var.continuous_provisioning_mode
-  karpenter_role_arn           = local.karpenter_role_arn 
+  karpenter_role_arn           = local.karpenter_role_arn
   wait_for_nodes               = local.wait_for_nodes
   enable_cert_manager          = local.enable_cert_manager
 
@@ -243,12 +261,12 @@ module "hyperpod_cluster" {
     module.vpc_endpoints,
     module.sagemaker_iam_role
   ]
- }
+}
 
 module "task_governance" {
   count  = local.create_task_governance_module ? 1 : 0
   source = "./modules/task_governance"
-  
+
   aws_region           = var.aws_region
   compute_quotas       = var.task_governance_compute_quotas
   eks_cluster_name     = local.eks_cluster_name
@@ -273,17 +291,17 @@ module "fsx_lustre" {
   inference_operator_enabled = local.create_hyperpod_inference_operator_module
   fsx_pvc_namespace          = var.fsx_pvc_namespace
   create_fsx_pvc_namespace   = var.create_fsx_pvc_namespace
-  
+
   depends_on = [
     module.hyperpod_cluster,
     module.task_governance
   ]
 }
 
- module "hyperpod_training_operator" {
+module "hyperpod_training_operator" {
   count  = local.create_hyperpod_training_operator_module ? 1 : 0
   source = "./modules/hyperpod_training_operator"
-  
+
   resource_name_prefix = var.resource_name_prefix
   eks_cluster_name     = var.eks_cluster_name
 
@@ -317,27 +335,27 @@ module "observability" {
   source = "./modules/observability"
 
   # requires direct reference to region to determine if Grafana is allowed at plan time 
-  aws_region                           = var.aws_region
-  resource_name_prefix                 = var.resource_name_prefix
-  vpc_id                               = local.vpc_id
-  security_group_id                    = local.security_group_id
-  private_subnet_ids                   = local.private_subnet_ids
-  eks_cluster_name                     = local.eks_cluster_name
-  eks_cluster_arn                      = local.eks_cluster_arn
-  create_grafana_workspace             = var.create_grafana_workspace
-  create_prometheus_workspace          = var.create_prometheus_workspace
-  prometheus_workspace_id              = var.existing_prometheus_workspace_id
-  grafana_workspace_id                 = var.existing_grafana_workspace_id
-  prometheus_workspace_name            = var.prometheus_workspace_name
-  grafana_workspace_name               = var.grafana_workspace_name
-  training_metric_level                = var.training_metric_level
-  task_governance_metric_level         = var.task_governance_metric_level
-  scaling_metric_level                 = var.scaling_metric_level
-  cluster_metric_level                 = var.cluster_metric_level
-  node_metric_level                    = var.node_metric_level
-  network_metric_level                 = var.network_metric_level
-  accelerated_compute_metric_level     = var.accelerated_compute_metric_level
-  logging_enabled                      = var.logging_enabled
+  aws_region                       = var.aws_region
+  resource_name_prefix             = var.resource_name_prefix
+  vpc_id                           = local.vpc_id
+  security_group_id                = local.security_group_id
+  private_subnet_ids               = local.private_subnet_ids
+  eks_cluster_name                 = local.eks_cluster_name
+  eks_cluster_arn                  = local.eks_cluster_arn
+  create_grafana_workspace         = var.create_grafana_workspace
+  create_prometheus_workspace      = var.create_prometheus_workspace
+  prometheus_workspace_id          = var.existing_prometheus_workspace_id
+  grafana_workspace_id             = var.existing_grafana_workspace_id
+  prometheus_workspace_name        = var.prometheus_workspace_name
+  grafana_workspace_name           = var.grafana_workspace_name
+  training_metric_level            = var.training_metric_level
+  task_governance_metric_level     = var.task_governance_metric_level
+  scaling_metric_level             = var.scaling_metric_level
+  cluster_metric_level             = var.cluster_metric_level
+  node_metric_level                = var.node_metric_level
+  network_metric_level             = var.network_metric_level
+  accelerated_compute_metric_level = var.accelerated_compute_metric_level
+  logging_enabled                  = var.logging_enabled
 
   depends_on = [
     module.hyperpod_cluster,
@@ -356,7 +374,7 @@ resource "null_resource" "guardduty_cleanup" {
   }
 
   provisioner "local-exec" {
-    when = destroy
+    when    = destroy
     command = "${path.module}/scripts/guardduty-cleanup.sh ${self.triggers.region} ${self.triggers.vpc_id}"
   }
 

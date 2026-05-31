@@ -84,17 +84,17 @@ output "vpc_endpoints_summary" {
       s3 = length(aws_vpc_endpoint.s3) > 0 ? aws_vpc_endpoint.s3[0].id : "not created"
     }
     interface_endpoints = {
-      ec2          = length(aws_vpc_endpoint.ec2) > 0 ? aws_vpc_endpoint.ec2[0].id : "not created"
-      ecr_api      = length(aws_vpc_endpoint.ecr_api) > 0 ? aws_vpc_endpoint.ecr_api[0].id : "not created"
-      ecr_dkr      = length(aws_vpc_endpoint.ecr_dkr) > 0 ? aws_vpc_endpoint.ecr_dkr[0].id : "not created"
-      sts          = length(aws_vpc_endpoint.sts) > 0 ? aws_vpc_endpoint.sts[0].id : "not created"
-      logs         = length(aws_vpc_endpoint.logs) > 0 ? aws_vpc_endpoint.logs[0].id : "not created"
-      monitoring   = length(aws_vpc_endpoint.monitoring) > 0 ? aws_vpc_endpoint.monitoring[0].id : "not created"
-      ssm          = length(aws_vpc_endpoint.ssm) > 0 ? aws_vpc_endpoint.ssm[0].id : "not created"
-      ssmmessages  = length(aws_vpc_endpoint.ssmmessages) > 0 ? aws_vpc_endpoint.ssmmessages[0].id : "not created"
-      ec2messages  = length(aws_vpc_endpoint.ec2messages) > 0 ? aws_vpc_endpoint.ec2messages[0].id : "not created"
-      lambda       = length(aws_vpc_endpoint.lambda) > 0 ? aws_vpc_endpoint.lambda[0].id : "not created"
-      sqs          = length(aws_vpc_endpoint.sqs) > 0 ? aws_vpc_endpoint.sqs[0].id : "not created"
+      ec2         = length(aws_vpc_endpoint.ec2) > 0 ? aws_vpc_endpoint.ec2[0].id : "not created"
+      ecr_api     = length(aws_vpc_endpoint.ecr_api) > 0 ? aws_vpc_endpoint.ecr_api[0].id : "not created"
+      ecr_dkr     = length(aws_vpc_endpoint.ecr_dkr) > 0 ? aws_vpc_endpoint.ecr_dkr[0].id : "not created"
+      sts         = length(aws_vpc_endpoint.sts) > 0 ? aws_vpc_endpoint.sts[0].id : "not created"
+      logs        = length(aws_vpc_endpoint.logs) > 0 ? aws_vpc_endpoint.logs[0].id : "not created"
+      monitoring  = length(aws_vpc_endpoint.monitoring) > 0 ? aws_vpc_endpoint.monitoring[0].id : "not created"
+      ssm         = length(aws_vpc_endpoint.ssm) > 0 ? aws_vpc_endpoint.ssm[0].id : "not created"
+      ssmmessages = length(aws_vpc_endpoint.ssmmessages) > 0 ? aws_vpc_endpoint.ssmmessages[0].id : "not created"
+      ec2messages = length(aws_vpc_endpoint.ec2messages) > 0 ? aws_vpc_endpoint.ec2messages[0].id : "not created"
+      lambda      = length(aws_vpc_endpoint.lambda) > 0 ? aws_vpc_endpoint.lambda[0].id : "not created"
+      sqs         = length(aws_vpc_endpoint.sqs) > 0 ? aws_vpc_endpoint.sqs[0].id : "not created"
     }
   }
 }

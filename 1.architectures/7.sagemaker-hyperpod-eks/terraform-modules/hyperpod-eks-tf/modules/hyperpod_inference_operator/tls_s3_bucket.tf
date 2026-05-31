@@ -41,9 +41,9 @@ resource "aws_s3_bucket_policy" "tls_policy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Deny"
+        Effect    = "Deny"
         Principal = "*"
-        Action = "s3:*"
+        Action    = "s3:*"
         Resource = [
           aws_s3_bucket.tls_certificates.arn,
           "${aws_s3_bucket.tls_certificates.arn}/*"

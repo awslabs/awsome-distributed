@@ -37,3 +37,9 @@ variable "create_vpc_endpoint_ingress_rule" {
   type        = bool
   default     = true
 }
+
+variable "enable_vxlan_rule" {
+  description = "Add UDP 8472 intra-SG rules for Cilium VXLAN overlay mode."
+  type        = bool
+  default     = false
+}

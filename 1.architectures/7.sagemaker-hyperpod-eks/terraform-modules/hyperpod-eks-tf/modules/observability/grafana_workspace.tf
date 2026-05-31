@@ -3,19 +3,19 @@
 resource "aws_grafana_workspace" "hyperpod" {
   count = local.is_amg_allowed && var.create_grafana_workspace ? 1 : 0
 
-  name                     = local.grafana_workspace_name 
+  name                     = local.grafana_workspace_name
   account_access_type      = "CURRENT_ACCOUNT"
   authentication_providers = ["AWS_SSO"]
   permission_type          = "CUSTOMER_MANAGED"
   role_arn                 = aws_iam_role.grafana_workspace[0].arn
-  
+
   configuration = jsonencode({
     unifiedAlerting = { enabled = true }
   })
 
   # ignore timestamp_suffix changes in name after initial deployment
   lifecycle {
-    ignore_changes = [name, configuration] 
+    ignore_changes = [name, configuration]
   }
 
   tags = {
@@ -48,14 +48,14 @@ resource "grafana_data_source" "cloudwatch" {
   type = "cloudwatch"
   name = "cloudwatch"
   uid  = "cloudwatch"
-  
+
   json_data_encoded = jsonencode({
-    authType        = "sigv4"
-    sigV4Auth       = true
-    sigV4Region     = data.aws_region.current.region
-    defaultRegion   = data.aws_region.current.region
-    httpMethod      = "POST"
-    sigV4AuthType   = "ec2_iam_role"
+    authType      = "sigv4"
+    sigV4Auth     = true
+    sigV4Region   = data.aws_region.current.region
+    defaultRegion = data.aws_region.current.region
+    httpMethod    = "POST"
+    sigV4AuthType = "ec2_iam_role"
   })
 
   lifecycle {
@@ -64,20 +64,20 @@ resource "grafana_data_source" "cloudwatch" {
 }
 
 resource "grafana_data_source" "prometheus" {
-  count        = local.is_amg_allowed ? 1 : 0
+  count = local.is_amg_allowed ? 1 : 0
 
   type = "prometheus"
   name = "prometheus"
   uid  = "prometheus"
   url  = "https://aps-workspaces.${data.aws_region.current.region}.amazonaws.com/workspaces/${local.prometheus_workspace_id}"
-  
+
   json_data_encoded = jsonencode({
-    authType        = "sigv4"
-    sigV4Auth       = true
-    sigV4Region     = data.aws_region.current.region
-    defaultRegion   = data.aws_region.current.region
-    httpMethod      = "POST"
-    sigV4AuthType   = "ec2_iam_role"
+    authType      = "sigv4"
+    sigV4Auth     = true
+    sigV4Region   = data.aws_region.current.region
+    defaultRegion = data.aws_region.current.region
+    httpMethod    = "POST"
+    sigV4AuthType = "ec2_iam_role"
   })
 
   lifecycle {
@@ -95,10 +95,10 @@ resource "grafana_folder" "alerts" {
 # Dashboard creation
 resource "grafana_dashboard" "hyperpod_dashboards" {
   for_each = local.is_amg_allowed ? local.dashboard_templates : {}
-  
+
   config_json = jsonencode(local.dashboard_content[each.key])
-  overwrite = true
-  
+  overwrite   = true
+
   lifecycle {
     ignore_changes = [config_json]
   }
@@ -110,11 +110,11 @@ resource "grafana_rule_group" "hyperpod_alerts" {
   name             = "sagemaker_hyperpod_alerts"
   folder_uid       = grafana_folder.alerts[0].uid
   interval_seconds = 300
-  
+
   lifecycle {
     ignore_changes = [rule]
   }
-  
+
   dynamic "rule" {
     for_each = local.alert_rules
     content {
@@ -123,12 +123,12 @@ resource "grafana_rule_group" "hyperpod_alerts" {
       no_data_state  = "OK"
       exec_err_state = "Error"
       for            = try(rule.value.for, "5m")
-      
+
       annotations = rule.value.annotations
       labels      = rule.value.labels
-      
+
       data {
-        ref_id = "A"
+        ref_id     = "A"
         query_type = ""
         relative_time_range {
           from = 600

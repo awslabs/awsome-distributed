@@ -60,3 +60,9 @@ variable "endpoint_public_access" {
   type        = bool
   default     = true
 }
+
+variable "skip_vpc_cni" {
+  description = "Skip deploying the VPC CNI EKS addon (used when Cilium replaces VPC CNI)."
+  type        = bool
+  default     = false
+}

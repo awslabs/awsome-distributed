@@ -20,8 +20,8 @@ resource "aws_subnet" "private" {
   availability_zone = data.aws_availability_zones.available.names[count.index]
 
   tags = {
-    Name = "${var.resource_name_prefix}-private-subnet-${count.index + 1}"
-    "kubernetes.io/role/internal-elb" = "1"
+    Name                                            = "${var.resource_name_prefix}-private-subnet-${count.index + 1}"
+    "kubernetes.io/role/internal-elb"               = "1"
     "kubernetes.io/cluster/${var.eks_cluster_name}" = "shared"
   }
 }
@@ -59,8 +59,8 @@ resource "aws_iam_role" "eks_cluster_role" {
 }
 
 resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
-    role = aws_iam_role.eks_cluster_role.name
-    policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  role       = aws_iam_role.eks_cluster_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
 resource "aws_cloudwatch_log_group" "eks_cluster" {
@@ -81,7 +81,7 @@ resource "aws_eks_cluster" "cluster" {
   }
 
   access_config {
-    authentication_mode = "API_AND_CONFIG_MAP"
+    authentication_mode                         = "API_AND_CONFIG_MAP"
     bootstrap_cluster_creator_admin_permissions = true
   }
 
@@ -101,22 +101,23 @@ resource "aws_eks_cluster" "cluster" {
 
 # These EKS addons can become active before nodes are available  
 resource "aws_eks_addon" "vpc_cni" {
-  cluster_name      = aws_eks_cluster.cluster.name
-  addon_name        = "vpc-cni"
+  count                       = var.skip_vpc_cni ? 0 : 1
+  cluster_name                = aws_eks_cluster.cluster.name
+  addon_name                  = "vpc-cni"
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
 }
 
 resource "aws_eks_addon" "kube_proxy" {
-  cluster_name      = aws_eks_cluster.cluster.name
-  addon_name        = "kube-proxy"
+  cluster_name                = aws_eks_cluster.cluster.name
+  addon_name                  = "kube-proxy"
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
 }
 
 resource "aws_eks_addon" "pod_identity" {
-  cluster_name      = aws_eks_cluster.cluster.name
-  addon_name        = "eks-pod-identity-agent"
+  cluster_name                = aws_eks_cluster.cluster.name
+  addon_name                  = "eks-pod-identity-agent"
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
 }
@@ -127,6 +128,6 @@ resource "null_resource" "coredns_addon" {
   provisioner "local-exec" {
     command = "aws eks create-addon --region ${data.aws_region.current.region} --cluster-name ${aws_eks_cluster.cluster.name} --addon-name coredns"
   }
-  
+
   depends_on = [aws_eks_cluster.cluster]
 }

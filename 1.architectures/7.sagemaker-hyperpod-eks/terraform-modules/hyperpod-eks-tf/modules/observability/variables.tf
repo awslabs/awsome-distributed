@@ -61,9 +61,9 @@ variable "create_grafana_workspace" {
 }
 
 variable "grafana_workspace_id" {
-    description = "The ID of the existing Amazon Managed Grafana (AMG) workspace"
-    type        = string
-    default     = ""
+  description = "The ID of the existing Amazon Managed Grafana (AMG) workspace"
+  type        = string
+  default     = ""
 }
 
 variable "grafana_workspace_name" {

@@ -7,7 +7,7 @@ resource "aws_eks_addon" "cert_manager" {
 
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"
-  
+
   configuration_values = jsonencode({
     replicaCount = 1
     tolerations = [
@@ -65,7 +65,7 @@ resource "aws_eks_addon" "cert_manager" {
 # Wait for cert-manager to be ready
 resource "null_resource" "wait_for_cert_manager" {
   count = var.enable_cert_manager ? 1 : 0
-  
+
   provisioner "local-exec" {
     command = <<-EOT
       aws eks update-kubeconfig --region ${data.aws_region.current.region} --name ${var.eks_cluster_name}
@@ -76,6 +76,6 @@ resource "null_resource" "wait_for_cert_manager" {
       echo "All cert-manager deployments are ready"
     EOT
   }
-  
+
   depends_on = [aws_eks_addon.cert_manager]
 }

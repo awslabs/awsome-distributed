@@ -1,8 +1,8 @@
 data "aws_region" "current" {}
 
 locals {
-  revision = var.rig_mode ? var.helm_repo_revision_rig : var.helm_repo_revision
-  rig_script_dir = var.rig_mode ? dirname(var.rig_script_path) : ""
+  revision            = var.rig_mode ? var.helm_repo_revision_rig : var.helm_repo_revision
+  rig_script_dir      = var.rig_mode ? dirname(var.rig_script_path) : ""
   rig_script_filename = var.rig_mode ? basename(var.rig_script_path) : ""
 }
 
@@ -28,11 +28,11 @@ resource "null_resource" "add_helm_repos" {
 }
 
 resource "helm_release" "hyperpod" {
-  name       = var.helm_release_name
-  chart      = "/tmp/helm-repo/${var.helm_repo_path}"
-  namespace  = var.namespace
+  name              = var.helm_release_name
+  chart             = "/tmp/helm-repo/${var.helm_repo_path}"
+  namespace         = var.namespace
   dependency_update = true
-  wait = false
+  wait              = false
 
   values = fileexists("/tmp/helm-repo/${var.helm_repo_path}/regional-values/values-${data.aws_region.current.region}.yaml") ? [
     file("/tmp/helm-repo/${var.helm_repo_path}/regional-values/values-${data.aws_region.current.region}.yaml")
@@ -40,23 +40,23 @@ resource "helm_release" "hyperpod" {
 
   set = [
     {
-      name = "mlflow.enabled"
+      name  = "mlflow.enabled"
       value = var.enable_mlflow
     },
     {
-      name = "trainingOperators.enabled"
+      name  = "trainingOperators.enabled"
       value = var.enable_kubeflow_training_operators
     },
     {
-      name = "cluster-role-and-bindings.enabled"
+      name  = "cluster-role-and-bindings.enabled"
       value = var.enable_cluster_role_and_bindings
     },
     {
-      name = "namespaced-role-and-bindings.enable"
+      name  = "namespaced-role-and-bindings.enable"
       value = var.enable_namespaced_role_and_bindings
     },
     {
-      name = "team-role-and-bindings.enabled"
+      name  = "team-role-and-bindings.enabled"
       value = var.enable_team_role_and_bindings
     },
     {
@@ -64,33 +64,33 @@ resource "helm_release" "hyperpod" {
       value = var.enable_gpu_operator
     },
     {
-      name = "nvidia-device-plugin.devicePlugin.enabled"
+      name  = "nvidia-device-plugin.devicePlugin.enabled"
       value = var.enable_gpu_operator ? false : var.enable_nvidia_device_plugin
     },
     {
-      name = "neuron-device-plugin.devicePlugin.enabled"
+      name  = "neuron-device-plugin.devicePlugin.enabled"
       value = var.enable_neuron_device_plugin
     },
     {
-      name = "mpi-operator.enabled"
+      name  = "mpi-operator.enabled"
       value = var.enable_mpi_operator
     },
     {
-      name  = "health-monitoring-agent.region", 
+      name  = "health-monitoring-agent.region",
       value = data.aws_region.current.region
     },
     {
-      name = "deep-health-check.enabled"
+      name  = "deep-health-check.enabled"
       value = var.enable_deep_health_check
     },
     {
-      name = "job-auto-restart.enabled"
+      name  = "job-auto-restart.enabled"
       value = var.enable_job_auto_restart
     },
     {
-      name = "hyperpod-patching.enabled"
+      name  = "hyperpod-patching.enabled"
       value = var.enable_hyperpod_patching
-    }, 
+    },
     {
       name  = "cert-manager.enabled"
       value = "false"
@@ -104,7 +104,7 @@ resource "helm_release" "hyperpod" {
 
 resource "null_resource" "run_rig_script" {
   count = var.rig_mode ? 1 : 0
-  
+
   provisioner "local-exec" {
     command = <<-EOT
       aws eks update-kubeconfig --region ${data.aws_region.current.region} --name ${var.eks_cluster_name}
@@ -113,7 +113,7 @@ resource "null_resource" "run_rig_script" {
       echo "y" | ./${local.rig_script_filename}
     EOT
   }
-  
+
   depends_on = [helm_release.hyperpod]
 }
 
@@ -126,7 +126,7 @@ resource "null_resource" "git_cleanup" {
       git checkout main
     EOT
   }
-  
+
   depends_on = [
     helm_release.hyperpod,
     null_resource.run_rig_script

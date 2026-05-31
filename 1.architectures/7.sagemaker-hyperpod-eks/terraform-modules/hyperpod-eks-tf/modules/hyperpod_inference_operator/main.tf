@@ -40,9 +40,9 @@ resource "aws_eks_addon" "metrics_server" {
   count        = var.enable_metrics_server ? 1 : 0
   cluster_name = var.eks_cluster_name
   addon_name   = "metrics-server"
-  
+
   configuration_values = jsonencode({
-    tolerations  = [
+    tolerations = [
       { operator = "Exists", effect = "NoSchedule" },
       { operator = "Exists", effect = "NoExecute" },
       { operator = "Exists", effect = "PreferNoSchedule" }
@@ -57,11 +57,11 @@ resource "aws_eks_addon" "inference_operator" {
   resolve_conflicts_on_update = "OVERWRITE"
 
   configuration_values = jsonencode({
-    executionRoleArn       = aws_iam_role.inference_operator.arn
-    tlsCertificateS3Bucket = aws_s3_bucket.tls_certificates.id
+    executionRoleArn                   = aws_iam_role.inference_operator.arn
+    tlsCertificateS3Bucket             = aws_s3_bucket.tls_certificates.id
     hyperpodClusterArn                 = var.hyperpod_cluster_arn
     jumpstartGatedModelDownloadRoleArn = aws_iam_role.jumpstart_gated.arn
-    
+
     alb = {
       enabled = true
       serviceAccount = {
@@ -69,7 +69,7 @@ resource "aws_eks_addon" "inference_operator" {
         roleArn = aws_iam_role.alb_controller.arn
       }
     }
-    
+
     keda = {
       enabled = true
       auth = {

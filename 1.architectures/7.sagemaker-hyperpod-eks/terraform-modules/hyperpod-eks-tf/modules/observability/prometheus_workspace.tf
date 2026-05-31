@@ -6,7 +6,7 @@ resource "aws_prometheus_workspace" "hyperpod" {
 
   # ignore timestamp_suffix changes in alias after initial deployment
   lifecycle {
-    ignore_changes = [alias] 
+    ignore_changes = [alias]
   }
 
   tags = {

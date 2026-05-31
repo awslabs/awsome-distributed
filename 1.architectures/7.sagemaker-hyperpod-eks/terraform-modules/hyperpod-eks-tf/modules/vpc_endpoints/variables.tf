@@ -37,12 +37,12 @@ variable "rig_mode" {
 
 variable "rig_rft_lambda_access" {
   description = "Whether to include Lambda access permissions for RFT"
-  type        = bool 
+  type        = bool
 }
 
 variable "rig_rft_sqs_access" {
-    description = "Whether to include SQS access permissions for RFT"
-  type        = bool 
+  description = "Whether to include SQS access permissions for RFT"
+  type        = bool
 }
 
 # Closed Network - VPC Endpoint Configuration
