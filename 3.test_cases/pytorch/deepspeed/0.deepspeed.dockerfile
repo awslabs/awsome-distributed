@@ -7,7 +7,11 @@
 # ============================================================
 FROM nvcr.io/nvidia/pytorch:25.04-py3
 
-ARG TRANSFORMERS_VERSION=4.44.2
+ARG TRANSFORMERS_VERSION=4.52.0
+ARG ACCELERATE_VERSION=1.6.0
+ARG DEEPSPEED_VERSION=0.16.4
+ARG PYNVML_VERSION=12.0.0
+ARG SENTENCEPIECE_VERSION=0.2.0
 ARG OPEN_MPI_PATH=/opt/amazon/openmpi
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -144,10 +148,12 @@ RUN mv ${OPEN_MPI_PATH}/bin/mpirun ${OPEN_MPI_PATH}/bin/mpirun.real \
 # 9. Python packages for DeepSpeed training
 # ============================================================
 RUN pip3 install --no-cache-dir \
-    awscli pynvml \
+    awscli \
+    pynvml==${PYNVML_VERSION} \
     transformers==${TRANSFORMERS_VERSION} \
-    sentencepiece python-etcd \
-    deepspeed>=0.16,<1.0 accelerate>=1.0,<2.0
+    sentencepiece==${SENTENCEPIECE_VERSION} \
+    deepspeed==${DEEPSPEED_VERSION} \
+    accelerate==${ACCELERATE_VERSION}
 
 RUN rm -rf /var/lib/apt/lists/*
 
