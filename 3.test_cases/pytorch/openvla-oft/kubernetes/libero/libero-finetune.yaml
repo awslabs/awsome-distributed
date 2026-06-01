@@ -1,0 +1,226 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+# libero-finetune.yaml — OpenVLA-OFT LIBERO fine-tuning PyTorchJob
+#
+# Structural scaffolding for the LIBERO Training_Job. The surrounding
+# task-suite-specific flags, secretKeyRef env vars, volumes, metadata.name
+# suffix, and optional namespace are filled in by follow-up tasks (4.2–4.6).
+#
+# See ./README.md for the full walkthrough and
+# https://github.com/moojink/openvla-oft/blob/main/LIBERO.md for the source
+# of the Recipe_Hyperparameters that Task 4.2 will wire in.
+#
+# Render + apply
+# --------------
+# This file uses `envsubst` placeholders and MUST be rendered before
+# `kubectl apply`:
+#
+#   export TASK_SUITE=libero_spatial_no_noops
+#   export TASK_SUITE_DNS="${TASK_SUITE//_/-}"
+#   source env_vars
+#   envsubst < libero-finetune.yaml | kubectl apply -f -
+---
+apiVersion: "kubeflow.org/v1"
+kind: PyTorchJob
+metadata:
+  # DNS-safe suite suffix from `env_vars` (e.g. `libero-spatial-no-noops`)
+  # keeps concurrent Training_Jobs against different Task_Suites from
+  # colliding on a single Kubernetes resource name (Req 5.3, 10.4).
+  name: openvla-oft-libero-${TASK_SUITE_DNS}
+  # Target namespace is parameterized via env_vars (`NAMESPACE`, default
+  # `default`) so the Download_Job and Training_Job land in the same
+  # namespace without requiring the caller to re-`kubens` between them.
+  # Resolves design open question #3.
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/part-of: openvla-oft-libero
+    app.kubernetes.io/component: finetune
+spec:
+  elasticPolicy:
+    rdzvBackend: c10d
+    minReplicas: 1
+    maxReplicas: 64
+    maxRestarts: 3
+    metrics:
+      - type: Resource
+        resource:
+          name: cpu
+          target:
+            type: Utilization
+            averageUtilization: 90
+  pytorchReplicaSpecs:
+    Worker:
+      replicas: $NUM_NODES
+      restartPolicy: OnFailure
+      template:
+        metadata:
+          labels:
+            app: openvla-oft-libero-finetune
+            app.kubernetes.io/part-of: openvla-oft-libero
+            app.kubernetes.io/component: finetune
+        spec:
+          # Volume mount mirrors what `finetune.py` and the PyTorch /
+          # NCCL runtime expect (Req 6.4):
+          #   - `shmem`  -> /dev/shm, needed for PyTorch DataLoader worker IPC.
+          #   - `local`  -> /mnt/k8s-disks/0, used for NCCL trace/log output.
+          #   - `data`   -> the shared Dataset_PVC, source of RLDS shards and
+          #                 destination of `/data/runs/<run_id>` checkpoints
+          #                 (binding design decision 1). Req 6.5 override hook
+          #                 (routing checkpoints elsewhere) is documented in
+          #                 the README but is not the default path.
+          volumes:
+            - name: shmem
+              hostPath:
+                path: /dev/shm
+            - name: local
+              hostPath:
+                path: /mnt/k8s-disks/0
+            - name: data
+              persistentVolumeClaim:
+                claimName: ${DATA_PVC_NAME}
+          nodeSelector:
+            node.kubernetes.io/instance-type: "${INSTANCE_TYPE}"
+          containers:
+            - name: pytorch
+              image: ${IMAGE_URI}
+              imagePullPolicy: Always
+              resources:
+                requests:
+                  nvidia.com/gpu: $GPU_PER_NODE
+                  vpc.amazonaws.com/efa: $EFA_PER_NODE
+                limits:
+                  nvidia.com/gpu: $GPU_PER_NODE
+                  vpc.amazonaws.com/efa: $EFA_PER_NODE
+              # Environment variables for the Worker container.
+              #
+              # HF_TOKEN and WANDB_API_KEY are sourced from the
+              # `openvla-oft-secrets` Kubernetes Secret via `secretKeyRef`
+              # (Req 7.1) rather than interpolated via envsubst, so tokens
+              # never land in rendered YAML. `optional: true` on the key
+              # lets the pod start when `WANDB_API_KEY` is intentionally
+              # absent (W&B offline mode — Req 7.4); a missing Secret
+              # resource still produces a CreateContainerConfigError
+              # (Req 7.3), documented in the README.
+              env:
+              - name: LOGLEVEL
+                value: "INFO"
+              # EFA / libfabric. Keep FI_* commented for non-EFA instances
+              # (g4dn, g5, g6e<24xlarge) and set FI_PROVIDER=tcp there.
+              - name: FI_PROVIDER
+                value: "${FI_PROVIDER}"
+              #- name: FI_EFA_USE_DEVICE_RDMA
+              #  value: "1"
+              #- name: FI_EFA_FORK_SAFE
+              #  value: "1"
+              #- name: FI_LOG_LEVEL
+              #  value: "1"
+              #- name: FI_EFA_ENABLE_SHM_TRANSFER
+              #  value: "1"
+              - name: TORCH_DISTRIBUTED_DEBUG
+                value: "DETAIL"
+              - name: TORCH_NCCL_ENABLE_MONITORING
+                value: "1"
+              - name: TORCH_NCCL_ASYNC_ERROR_HANDLING
+                value: "1"
+              - name: PYTORCH_CUDA_ALLOC_CONF
+                value: "expandable_segments:True"
+              - name: NCCL_DEBUG
+                value: "INFO"
+              - name: NCCL_SOCKET_IFNAME
+                value: "^lo"
+              # Pin the Gloo helper process group to loopback. PyTorch
+              # always creates a Gloo PG alongside NCCL for non-tensor
+              # metadata, even when the user requests NCCL. On a
+              # single-pod, single-node Worker (which this manifest is —
+              # `replicas: $NUM_NODES` with `--nproc_per_node=$GPU_PER_NODE`
+              # places all 8 ranks in one pod), every rank lives in the
+              # same network namespace, so 127.0.0.1 is the canonical
+              # rendezvous address for the Gloo helper. Without this
+              # override Gloo inherits NCCL_SOCKET_IFNAME=^lo (excludes
+              # loopback, no positive interface match), tries to bind on
+              # the pod IP via whichever interface CNI exposes (EKS VPC
+              # CNI uses names that vary across AMIs — `eth0`, `eni0`,
+              # `lo`, etc.), and listener/connector race on the wrong
+              # address. The result is
+              # `Gloo connectFullMesh failed ... SO_ERROR: Connection
+              # refused, remote=[<pod-ip>]:<port>` on every non-zero
+              # rank. NCCL is unaffected — it goes over EFA via
+              # libfabric and never touches this socket path.
+              - name: GLOO_SOCKET_IFNAME
+                value: "lo"
+              - name: HF_TOKEN
+                valueFrom:
+                  secretKeyRef:
+                    name: openvla-oft-secrets
+                    key: HF_TOKEN
+                    optional: true
+              - name: HF_HOME
+                value: "/data/hf-cache"
+              - name: WANDB_API_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: openvla-oft-secrets
+                    key: WANDB_API_KEY
+                    optional: true
+              - name: WANDB_MODE
+                value: "${WANDB_MODE}"
+              - name: WANDB_ENTITY
+                value: "${WANDB_ENTITY}"
+              - name: WANDB_PROJECT
+                value: "${WANDB_PROJECT}"
+              #
+              # Container command (Task 4.2): invoke torchrun with the exact
+              # upstream LIBERO.md hyperparameter set (Req 4.2–4.10, 5.2).
+              # `${TASK_SUITE}` flows through envsubst into --dataset_name and
+              # fails loudly at render time if unset (see env_vars).
+              # `${RUN_ID_NOTE:-<default>}` gives users an override hook while
+              # defaulting to the exact upstream run_id_note string (Req 4.7).
+              command:
+                - /usr/local/bin/torchrun
+                - --nproc_per_node=$GPU_PER_NODE
+                - --nnodes=$NUM_NODES
+                - /openvla-oft/finetune.py
+                - --vla_path=openvla/openvla-7b
+                - --data_root_dir=/data/datasets/rlds
+                - --dataset_name=${TASK_SUITE}
+                - --run_root_dir=/data/runs
+                - --use_l1_regression=True
+                - --use_diffusion=False
+                - --use_film=False
+                - --num_images_in_input=2
+                - --use_proprio=True
+                - --batch_size=8
+                - --learning_rate=5e-4
+                - --grad_accumulation_steps=1
+                - --num_steps_before_decay=100000
+                - --max_steps=100
+                - --save_freq=10
+                # Smoke test only needs to prove the save/merge path works once.
+                # With --merge_lora_during_training=True, every save writes the
+                # full merged OpenVLA-7B (~15 GB in bf16), not just the small
+                # rank-32 LoRA adapter. At save_freq=10 over max_steps=100 that
+                # is 10 merged checkpoints (~150 GB) of an unconverged model.
+                # save_latest_checkpoint_only=True keeps a single overwritten
+                # dir (~15 GB), which fits the README's 100 GiB PVC minimum.
+                - --save_latest_checkpoint_only=True
+                - --image_aug=True
+                - --use_lora=True
+                - --lora_rank=32
+                - --lora_dropout=0.0
+                - --merge_lora_during_training=True
+                - --run_id_note=${RUN_ID_NOTE:-parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state}
+                - --wandb_entity=${WANDB_ENTITY}
+                - --wandb_project=${WANDB_PROJECT}
+                - --wandb_log_freq=10
+              # volumeMounts mirror the generic manifest's mount points so the
+              # DataLoader, NCCL, and Dataset_PVC paths are exactly where
+              # `finetune.py` and the PyTorch/NCCL runtime expect them
+              # (Req 6.4). `/data` is the Dataset_PVC (Req 6.5).
+              volumeMounts:
+                - name: shmem
+                  mountPath: /dev/shm
+                - name: local
+                  mountPath: /local
+                - name: data
+                  mountPath: /data

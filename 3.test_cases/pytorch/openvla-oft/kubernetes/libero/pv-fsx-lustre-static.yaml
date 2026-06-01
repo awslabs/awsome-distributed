@@ -1,0 +1,89 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+# pv-fsx-lustre-static.yaml — Dataset_PVC via pre-provisioned FSx for Lustre
+#
+# SageMaker HyperPod-on-EKS path for the LIBERO recipe: bind an existing
+# FSx for Lustre filesystem as a static PersistentVolume, then expose it to
+# download and training pods through a PersistentVolumeClaim mounted at
+# /data. See ./README.md for the full walkthrough.
+#
+# Use this file when:
+#   - You are running on SageMaker HyperPod-on-EKS (or any EKS cluster) with
+#     an FSx for Lustre filesystem that has ALREADY been provisioned
+#     out-of-band (CloudFormation, Terraform, console, etc.).
+#   - You want the PVC to bind to that specific filesystem, with no dynamic
+#     provisioning and no risk of accidentally deleting the FSx on PVC
+#     teardown (`persistentVolumeReclaimPolicy: Retain`).
+#
+# Use ./pvc-fsx-lustre-dynamic.yaml instead when:
+#   - You want the FSx for Lustre CSI driver to PROVISION a new filesystem
+#     on demand from a StorageClass.
+#
+# This file uses `envsubst` placeholders and MUST be rendered before
+# `kubectl apply`:
+#
+#   source env_vars                     # sets DATA_PVC_NAME, DATA_PVC_SIZE, FSX_*
+#   envsubst < pv-fsx-lustre-static.yaml | kubectl apply -f -
+#
+# Required env vars (add to env_vars or export in your shell):
+#   - DATA_PVC_NAME       PVC name mounted at /data (default: fsx-claim)
+#   - DATA_PVC_SIZE       PV/PVC capacity (default: 1200Gi; matches the FSx
+#                         filesystem size you already provisioned)
+#   - FSX_FILESYSTEM_ID   FSx filesystem ID (e.g. fs-0abc123def456)
+#   - FSX_DNS_NAME        FSx DNS name   (e.g. fs-0abc123def456.fsx.us-east-1.amazonaws.com)
+#   - FSX_MOUNT_NAME      FSx mount name (e.g. abcdef01; from the FSx console
+#                         or `aws fsx describe-file-systems`)
+#
+# Find these three FSx values quickly:
+#   aws fsx describe-file-systems \
+#     --query 'FileSystems[*].{Id:FileSystemId,DNS:DNSName,Mount:LustreConfiguration.MountName}'
+#
+# Why `storageClassName: ""` on both the PV and PVC:
+#   An empty storageClassName disables dynamic provisioning and forces the
+#   PVC to bind to the PV named by `volumeName:` below. This is the
+#   standard Kubernetes pattern for static binding to a pre-provisioned
+#   filesystem.
+#
+# Why `persistentVolumeReclaimPolicy: Retain`:
+#   Never delete the pre-provisioned FSx filesystem automatically — the
+#   filesystem lifecycle is owned out-of-band (CloudFormation / Terraform /
+#   console), so PVC deletion must leave the data intact.
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: fsx-pv-openvla-oft-libero
+  labels:
+    app.kubernetes.io/part-of: openvla-oft-libero
+spec:
+  capacity:
+    storage: ${DATA_PVC_SIZE}
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  mountOptions:
+    - flock
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  csi:
+    driver: fsx.csi.aws.com
+    volumeHandle: ${FSX_FILESYSTEM_ID}
+    volumeAttributes:
+      dnsname: ${FSX_DNS_NAME}
+      mountname: ${FSX_MOUNT_NAME}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${DATA_PVC_NAME}
+  labels:
+    app.kubernetes.io/part-of: openvla-oft-libero
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: fsx-pv-openvla-oft-libero
+  resources:
+    requests:
+      storage: ${DATA_PVC_SIZE}

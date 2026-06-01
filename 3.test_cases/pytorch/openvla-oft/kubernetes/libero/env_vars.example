@@ -1,0 +1,106 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+# env_vars — LIBERO recipe (kubernetes/libero/)
+#
+# Single source of truth for `envsubst` variables used by every manifest in
+# this directory: libero-download.yaml, libero-finetune.yaml, and the
+# pvc-fsx-lustre-*.yaml storage templates.
+#
+# Usage:
+#   export TASK_SUITE=libero_spatial_no_noops
+#   export TASK_SUITE_DNS="${TASK_SUITE//_/-}"
+#   source env_vars
+#   envsubst < libero-download.yaml | kubectl apply -f -
+#   envsubst < libero-finetune.yaml | kubectl apply -f -
+#
+# TASK_SUITE and TASK_SUITE_DNS use the `${VAR:?msg}` form so that unset or
+# empty values fail loudly — both at `source env_vars` time (Bash parameter
+# expansion) and at `envsubst` render time. This is the binding "fail loud
+# on unset TASK_SUITE" decision from the design.
+#
+# HF_TOKEN and WANDB_API_KEY are intentionally absent from this file. They
+# flow through the `openvla-oft-secrets` Kubernetes Secret via
+# `secretKeyRef`, never through `envsubst` interpolation, so tokens never
+# land in rendered YAML.
+#
+# See ./README.md for the full walkthrough.
+
+# Image + namespace.
+# Tag is pinned to the OPENVLA_OFT_COMMIT baked into ../../Dockerfile rather
+# than `latest`, following the repo convention of fixed tags. A pinned tag
+# means a rebuild can't silently serve a stale image — the exact stale-`:latest`
+# failure mode called out in the ncclDevCommDestroy troubleshooting entry in
+# README.md. Replace <account>/<region> with your ECR target, and bump the tag
+# whenever you bump OPENVLA_OFT_COMMIT and rebuild.
+export IMAGE_URI=${IMAGE_URI:-<account>.dkr.ecr.<region>.amazonaws.com/openvla-oft:e4287e9}
+# Kubernetes namespace the Download_Job and Training_Job get applied to.
+# Optional per design open question #3 — leave as "default" for the MVP.
+# Override via `export NAMESPACE=<ns>` before sourcing this file.
+export NAMESPACE=${NAMESPACE:-default}
+
+# Cluster shape.
+export INSTANCE_TYPE=${INSTANCE_TYPE:-p5.48xlarge}
+export NUM_NODES=${NUM_NODES:-1}
+export GPU_PER_NODE=${GPU_PER_NODE:-8}
+export EFA_PER_NODE=${EFA_PER_NODE:-32}
+export FI_PROVIDER=${FI_PROVIDER:-efa}
+
+# Storage.
+# Default targets the `fsx-claim` PVC that ships with the SageMaker
+# HyperPod-on-EKS / aws-do-eks cluster templates (see README.md section 2.3).
+# Override to the PVC name created by pvc-fsx-lustre-dynamic.yaml or
+# pv-fsx-lustre-static.yaml if you provision a fresh filesystem instead.
+export DATA_PVC_NAME=${DATA_PVC_NAME:-fsx-claim}
+export DATA_PVC_SIZE=${DATA_PVC_SIZE:-1200Gi}
+
+# ---- FAIL LOUD: TASK_SUITE must be set explicitly. ----
+# envsubst (GNU gettext and a8m/envsubst) both honour :? with a message.
+: "${TASK_SUITE:?TASK_SUITE must be set to one of libero_spatial_no_noops, libero_object_no_noops, libero_goal_no_noops, libero_10_no_noops (or 'all' for the download job)}"
+export TASK_SUITE
+
+# DNS-safe form of TASK_SUITE for metadata.name. Must also be set; derive via:
+#   export TASK_SUITE_DNS="${TASK_SUITE//_/-}"
+: "${TASK_SUITE_DNS:?TASK_SUITE_DNS must be set, e.g. export TASK_SUITE_DNS=\"\${TASK_SUITE//_/-}\"}"
+export TASK_SUITE_DNS
+
+# Optional: override the upstream run_id_note.
+export RUN_ID_NOTE=${RUN_ID_NOTE:-parallel_dec--8_acts_chunk--continuous_acts--L1_regression--3rd_person_img--wrist_img--proprio_state}
+
+# W&B. WANDB_API_KEY comes from the Secret, not from here.
+#
+# WANDB_MODE supports exactly three values:
+#   disabled — recipe default. No telemetry, no local files, all wandb
+#              calls are no-ops. WANDB_API_KEY is not needed. Use this if
+#              you want the Training_Job to run on clusters without
+#              outbound wandb.ai connectivity and without a configured
+#              API key.
+#   offline  — Writes wandb run files locally under
+#              /data/runs/<run_id>/wandb/ on the Dataset PVC, but never
+#              contacts wandb.ai. WANDB_API_KEY is not needed. Use this
+#              if you want local-only run files you can `wandb sync`
+#              later.
+#   online   — Streams telemetry to wandb.ai in real time. Requires
+#              WANDB_API_KEY in the openvla-oft-secrets Secret. Use this
+#              when you have a wandb account and want live dashboards.
+#
+# Override at the shell before sourcing this file, e.g.
+#   export WANDB_MODE=online   # or offline
+export WANDB_MODE=${WANDB_MODE:-disabled}
+export WANDB_ENTITY=${WANDB_ENTITY:-your-wandb-entity}
+export WANDB_PROJECT=${WANDB_PROJECT:-openvla-oft-libero}
+
+# FSx (only required if you render pvc-fsx-lustre-*.yaml).
+# FSX_SUBNET_ID / FSX_SECURITY_GROUP_ID drive the dynamic-provisioning path
+# (pvc-fsx-lustre-dynamic.yaml). FSX_FILESYSTEM_ID / FSX_DNS_NAME /
+# FSX_MOUNT_NAME drive the static-binding path (pv-fsx-lustre-static.yaml).
+#
+# Leave all five empty (the defaults below) when the cluster already exposes
+# an FSx-backed PVC (for example, a `fsx-claim` PVC created during cluster
+# provisioning). In that case set DATA_PVC_NAME to the existing PVC name and
+# skip both FSx manifests — see README.md section 2.3.
+export FSX_FILESYSTEM_ID=${FSX_FILESYSTEM_ID:-}
+export FSX_SUBNET_ID=${FSX_SUBNET_ID:-}
+export FSX_SECURITY_GROUP_ID=${FSX_SECURITY_GROUP_ID:-}
+export FSX_DNS_NAME=${FSX_DNS_NAME:-}
+export FSX_MOUNT_NAME=${FSX_MOUNT_NAME:-}

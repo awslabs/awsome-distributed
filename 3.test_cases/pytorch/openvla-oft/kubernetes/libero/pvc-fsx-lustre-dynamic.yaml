@@ -1,0 +1,59 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+# pvc-fsx-lustre-dynamic.yaml — Dataset_PVC via FSx for Lustre CSI (dynamic)
+#
+# EKS path for the LIBERO recipe: the FSx for Lustre CSI driver provisions a
+# new filesystem on demand when the PVC below is created, then mounts it at
+# /data in every download and training pod. See ./README.md for the full
+# walkthrough.
+#
+# This file uses `envsubst` placeholders and MUST be rendered before
+# `kubectl apply`:
+#
+#   source env_vars                    # sets DATA_PVC_NAME, DATA_PVC_SIZE, FSX_*
+#   envsubst < pvc-fsx-lustre-dynamic.yaml | kubectl apply -f -
+#
+# Required env vars:
+#   - DATA_PVC_NAME            PVC name mounted at /data (default: fsx-claim)
+#   - DATA_PVC_SIZE            PVC size (default: 1200Gi; 10.2 GiB dataset + checkpoint headroom)
+#   - FSX_SUBNET_ID            Private subnet ID where the FSx filesystem is created
+#   - FSX_SECURITY_GROUP_ID    Security group that allows Lustre traffic (988, 1018-1023)
+#
+# This manifest is a reference for operators who do not already have a
+# cluster-wide FSx StorageClass. If your cluster already provides one,
+# skip the StorageClass document below and point the PVC at it instead.
+#
+# HyperPod-on-EKS users with a pre-provisioned FSx filesystem should use
+# ./pv-fsx-lustre-static.yaml instead of this file.
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fsx-sc-openvla-oft
+provisioner: fsx.csi.aws.com
+volumeBindingMode: Immediate
+parameters:
+  subnetId: ${FSX_SUBNET_ID}
+  securityGroupIds: ${FSX_SECURITY_GROUP_ID}
+  deploymentType: PERSISTENT_2
+  perUnitStorageThroughput: "250"
+  automaticBackupRetentionDays: "0"
+  dataCompressionType: "LZ4"
+  fileSystemTypeVersion: "2.15"
+mountOptions:
+  - flock
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${DATA_PVC_NAME}
+  labels:
+    app.kubernetes.io/part-of: openvla-oft-libero
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: fsx-sc-openvla-oft
+  resources:
+    requests:
+      storage: ${DATA_PVC_SIZE}

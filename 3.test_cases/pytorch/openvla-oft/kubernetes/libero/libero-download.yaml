@@ -1,0 +1,213 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+# libero-download.yaml — one-shot LIBERO RLDS dataset staging Job
+#
+# Downloads `openvla/modified_libero_rlds` TFDS shards from the Hugging Face
+# Hub onto the shared Dataset_PVC (mounted at /data) so the Training_Job can
+# read them via POSIX random-access instead of streaming from the Hub at each
+# step. See ./README.md for the full walkthrough.
+#
+# This Job reuses the generic `openvla-oft` container image (the same
+# IMAGE_URI as the Training Job, pinned to the Dockerfile's commit tag)
+# instead of
+# defining a download-specific one — the tools it needs (`pip`,
+# `huggingface-cli`) are already present. It requests CPU/memory only and
+# does not request `nvidia.com/gpu` or `vpc.amazonaws.com/efa`, so the pod is
+# schedulable on a plain CPU node (Req 2.7).
+#
+# Render + apply
+# --------------
+# This file uses `envsubst` placeholders and MUST be rendered before
+# `kubectl apply`:
+#
+#   export TASK_SUITE=libero_spatial_no_noops
+#   export TASK_SUITE_DNS="${TASK_SUITE//_/-}"
+#   source env_vars
+#   envsubst < libero-download.yaml | kubectl apply -f -
+#
+# Required env vars consumed at render time (all sourced from ./env_vars):
+#   - IMAGE_URI          openvla-oft container image URI (reused, no second build)
+#   - DATA_PVC_NAME      PVC mounted at /data for dataset + checkpoint storage
+#   - TASK_SUITE         One of:
+#                          libero_spatial_no_noops
+#                          libero_object_no_noops
+#                          libero_goal_no_noops
+#                          libero_10_no_noops
+#                          all           (downloads all four suites)
+#   - TASK_SUITE_DNS     DNS-safe form of TASK_SUITE for metadata.name
+#                        (e.g. `libero-spatial-no-noops`). Derive via:
+#                          export TASK_SUITE_DNS="${TASK_SUITE//_/-}"
+#
+# Secrets (NOT interpolated via envsubst — flow through Kubernetes Secret
+# `openvla-oft-secrets` via `secretKeyRef`, Req 7.1):
+#   - HF_TOKEN           Optional Hugging Face token for rate-limited /
+#                        gated access. `optional: true` on the secret key
+#                        means an absent token still lets the pod start; the
+#                        public `openvla/modified_libero_rlds` dataset does
+#                        not require authentication.
+#
+# envsubst-vs-bash escaping rules used in the container args block below
+# ----------------------------------------------------------------------
+# The args string is rendered by `envsubst` before being sent to the API
+# server, then executed by bash inside the pod. Any bash-variable
+# reference inside the args block that is meant for the pod (not
+# envsubst) MUST survive the render.
+#
+# This file is written against the `$$`-as-escape convention used by the
+# a8m/envsubst and drone/envsubst variants (and by `gomplate`, etc.),
+# where a doubled dollar sign `$$` renders to a single literal `$`. Under
+# that convention, `$$NAME` renders to `$NAME` and is then expanded by
+# the pod's bash at runtime.
+#
+# WARNING: GNU gettext's `envsubst` (the `envsubst` shipped with the
+# `gettext` package on Linux / Homebrew) does NOT honour `$$` as an
+# escape. On GNU envsubst, `$$NAME` where `NAME` is set in the shell
+# environment renders to `$<value-of-NAME>`, which will break the bash
+# body. GNU also does not understand `${VAR:-default}` expansion (used by
+# `${RUN_ID_NOTE:-…}` in libero-finetune.yaml). If your render environment
+# uses GNU envsubst, either:
+#   (a) install a8m/envsubst (`go install github.com/a8m/envsubst/...`)
+#       or another `$$`-aware variant (recommended), or
+#   (b) edit the manifest to drop the a8m-only features before rendering:
+#       collapse every `$$NAME` in the `args` body to single-dollar `$NAME`,
+#       then render with an explicit allow-list that names the manifest-level
+#       placeholders ONLY (so GNU leaves the now single-dollar runtime bash
+#       variables literal):
+#         envsubst '$IMAGE_URI $DATA_PVC_NAME $NAMESPACE $TASK_SUITE $TASK_SUITE_DNS' \
+#             < libero-download.yaml | kubectl apply -f -
+#       See ./README.md section 0.4 for the full GNU-fallback procedure.
+#
+# Convention in this file's container `args` body:
+#   * EVERY bash-intended variable reference is written as `$$NAME` or
+#     `$${NAME[@]}`, so a `$$`-aware `envsubst` turns it into `$NAME` /
+#     `${NAME[@]}` and the pod's bash expands it at runtime.
+#   * NO bash-intended reference uses a single `$`, to keep an
+#     allow-list-less `envsubst` from eating it at render time.
+#   * `TASK_SUITE` reaches the pod via the `env:` block below, not via
+#     envsubst substitution inside `args`. The pod's bash reads it as
+#     `$$TASK_SUITE` (which `envsubst` collapses to `$TASK_SUITE`).
+#
+# The one place a single `$` IS correct is the `env:` block's
+# `value: "${TASK_SUITE}"` — that's the intentional render-time hand-off
+# of the caller's TASK_SUITE into the container environment.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: openvla-oft-libero-download-${TASK_SUITE_DNS}
+  # Target namespace is parameterized via env_vars (`NAMESPACE`, default
+  # `default`) so the Download_Job and Training_Job land in the same
+  # namespace without requiring the caller to re-`kubens` between them.
+  # Resolves design open question #3.
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/part-of: openvla-oft-libero
+    app.kubernetes.io/component: download
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: openvla-oft-libero-download
+        app.kubernetes.io/part-of: openvla-oft-libero
+        app.kubernetes.io/component: download
+    spec:
+      restartPolicy: OnFailure
+      # No GPU nodeSelector: this Job only needs CPU + network to stage
+      # shards onto the PVC. A generic linux selector keeps it from being
+      # scheduled onto windows nodes in mixed-OS clusters.
+      nodeSelector:
+        kubernetes.io/os: linux
+      volumes:
+        # Dataset_PVC: staging destination for LIBERO TFDS shards, also
+        # hosts the Hugging Face cache under /data/hf-cache.
+        - name: data
+          persistentVolumeClaim:
+            claimName: ${DATA_PVC_NAME}
+      containers:
+        - name: download
+          image: ${IMAGE_URI}
+          imagePullPolicy: Always
+          resources:
+            # CPU/memory only. Do NOT request nvidia.com/gpu or
+            # vpc.amazonaws.com/efa — this Job is I/O-bound and must be
+            # schedulable on CPU-only nodes (Req 2.7).
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+          env:
+            # Disable the NVIDIA Container Toolkit's automatic GPU injection.
+            # The openvla-oft image inherits NVIDIA_VISIBLE_DEVICES=all from
+            # the nccl-tests base, which makes nvidia-container-runtime try to
+            # enumerate GPUs at container-create time. On a node without the
+            # NVIDIA driver loaded (or on any CPU-only node), that enumeration
+            # fails before the entrypoint runs with:
+            #   failed to initialize NVML: Driver Not Loaded
+            # `void` is the documented opt-out value: the runtime skips the
+            # GPU CDI/NVML pass entirely. This Download Job is I/O-bound and
+            # never touches CUDA, so disabling GPU injection is correct.
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "void"
+            # TASK_SUITE is substituted here (single `$`) by envsubst at
+            # render time and re-validated inside the pod against the
+            # allow-list below.
+            - name: TASK_SUITE
+              value: "${TASK_SUITE}"
+            # Route the Hugging Face cache to the PVC so repeat runs
+            # benefit from content-addressed caching (idempotence, Req 2.9).
+            - name: HF_HOME
+              value: "/data/hf-cache"
+            # Secret-sourced token (Req 7.1, Task 3.2). `optional: true` on
+            # the key means a missing key still lets the pod start (public
+            # dataset access); a missing Secret *resource* still produces
+            # CreateContainerConfigError, per README troubleshooting.
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: openvla-oft-secrets
+                  key: HF_TOKEN
+                  optional: true
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+
+              ALLOWED=(libero_spatial_no_noops libero_object_no_noops libero_goal_no_noops libero_10_no_noops all)
+              SUITE="$$TASK_SUITE"
+
+              # Validate against allow-list (Req 2.6). `set -u` above plus
+              # this check together mean an unset/empty TASK_SUITE fails
+              # loud: `set -u` blows up at `$$TASK_SUITE` expansion, and a
+              # non-empty but invalid value lands here.
+              if ! printf '%s\n' "$${ALLOWED[@]}" | grep -qxF -- "$$SUITE"; then
+                echo "ERROR: TASK_SUITE='$$SUITE' not in allow-list: $${ALLOWED[*]}" >&2
+                exit 2
+              fi
+
+              # Install hf_transfer at pod startup (binding design decision 3).
+              pip install --no-cache-dir 'hf_transfer>=0.1.6'
+              export HF_HUB_ENABLE_HF_TRANSFER=1
+
+              # Expand 'all' -> four suites.
+              if [[ "$$SUITE" == "all" ]]; then
+                SUITES=(libero_spatial_no_noops libero_object_no_noops libero_goal_no_noops libero_10_no_noops)
+              else
+                SUITES=("$$SUITE")
+              fi
+
+              mkdir -p /data/datasets/rlds
+              for S in "$${SUITES[@]}"; do
+                echo "Downloading $$S ..."
+                huggingface-cli download openvla/modified_libero_rlds \
+                  --repo-type dataset \
+                  --include "$$S/*" \
+                  --local-dir /data/datasets/rlds/ \
+                  --max-workers 8
+              done
+
+              echo "Download complete. Tree:"
+              find /data/datasets/rlds -maxdepth 3 -mindepth 1 | sort
+          volumeMounts:
+            - name: data
+              mountPath: /data
