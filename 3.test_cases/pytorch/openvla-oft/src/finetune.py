@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 """
 finetune.py
 
@@ -5,9 +8,32 @@ Fine-tunes OpenVLA via LoRA using the OFT (Optimized Fine-Tuning) recipe.
 
 Source: https://github.com/moojink/openvla-oft/blob/main/vla-scripts/finetune.py
 
-This script is vendored verbatim from the openvla-oft repository. It expects the
-`prismatic`, `experiments`, and related packages from that repository to be
-importable (installed via requirements.txt + `pip install -e .` on the openvla-oft
+This script is adapted from the openvla-oft repository, NOT vendored verbatim.
+The code changes from upstream are three distributed-launch fixes:
+
+  1. `snapshot_download(...)` wrapped in `main_process_first()` — avoids 8x
+     concurrent HF Hub API hits racing the post-download `update_auto_map`
+     rewrite.
+  2. `AutoProcessor.from_pretrained(...)` / `AutoModelForVision2Seq.from_pretrained(...)`
+     wrapped in `main_process_first()` — avoids a partial read of the
+     `trust_remote_code` dynamic-modules cache (the
+     `processing_prismatic has no attribute 'PrismaticProcessor'` crash).
+  3. `save_training_checkpoint` `merge_lora_during_training` block — gates the
+     base-model reload + `merge_and_unload()` to rank 0 only, instead of every
+     rank redundantly merging the 7B model and discarding the result on all
+     ranks but rank 0.
+
+Fixes 1 and 2 are documented in this test case's README troubleshooting section.
+
+These fixes are general-purpose and belong upstream; a PR has been opened against
+moojink/openvla-oft. Once it merges, this adapted copy should be dropped: bump
+OPENVLA_OFT_COMMIT in the Dockerfile to the merged commit and invoke the script
+the image already installs (`/opt/openvla-oft/vla-scripts/finetune.py`) instead
+of COPY-ing this divergent copy. Do NOT re-vendor from upstream main to "resync"
+before then — that would silently drop the fixes above.
+
+It expects the `prismatic`, `experiments`, and related packages from that
+repository to be importable (installed via `pip install -e .` on the openvla-oft
 source tree inside the container image).
 """
 
@@ -474,16 +500,23 @@ def save_training_checkpoint(
     dist.barrier()
 
     if cfg.use_lora and cfg.merge_lora_during_training:
-        base_vla = AutoModelForVision2Seq.from_pretrained(
-            cfg.vla_path, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, trust_remote_code=True
-        )
-        merged_vla = PeftModel.from_pretrained(base_vla, adapter_dir)
-        merged_vla = merged_vla.merge_and_unload()
-
+        # Only rank 0 needs to load the base model, merge the adapter, and save
+        # the result. The adapter is already on disk (guaranteed by the
+        # dist.barrier() above), so having every rank reload + merge the 7B
+        # model would just be redundant work (7x extra full-model loads + merges
+        # and shared-filesystem reads per checkpoint) whose result is discarded
+        # on every rank except rank 0.
         if distributed_state.is_main_process:
+            base_vla = AutoModelForVision2Seq.from_pretrained(
+                cfg.vla_path, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, trust_remote_code=True
+            )
+            merged_vla = PeftModel.from_pretrained(base_vla, adapter_dir)
+            merged_vla = merged_vla.merge_and_unload()
             merged_vla.save_pretrained(checkpoint_dir)
             print(f"Saved merged model for Step {log_step} at: {checkpoint_dir}")
 
+        # All ranks reach this barrier so the merge stays in lockstep with the
+        # training loop; the load/merge above is gated to rank 0 only.
         dist.barrier()
 
 

@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 # libero-download.yaml — one-shot LIBERO RLDS dataset staging Job
 #
 # Downloads `openvla/modified_libero_rlds` TFDS shards from the Hugging Face
@@ -5,7 +8,9 @@
 # read them via POSIX random-access instead of streaming from the Hub at each
 # step. See ./README.md for the full walkthrough.
 #
-# This Job reuses the generic `openvla-oft:latest` container image instead of
+# This Job reuses the generic `openvla-oft` container image (the same
+# IMAGE_URI as the Training Job, pinned to the Dockerfile's commit tag)
+# instead of
 # defining a download-specific one — the tools it needs (`pip`,
 # `huggingface-cli`) are already present. It requests CPU/memory only and
 # does not request `nvidia.com/gpu` or `vpc.amazonaws.com/efa`, so the pod is
@@ -59,14 +64,19 @@
 # `gettext` package on Linux / Homebrew) does NOT honour `$$` as an
 # escape. On GNU envsubst, `$$NAME` where `NAME` is set in the shell
 # environment renders to `$<value-of-NAME>`, which will break the bash
-# body. If your render environment uses GNU envsubst, either:
+# body. GNU also does not understand `${VAR:-default}` expansion (used by
+# `${RUN_ID_NOTE:-…}` in libero-finetune.yaml). If your render environment
+# uses GNU envsubst, either:
 #   (a) install a8m/envsubst (`go install github.com/a8m/envsubst/...`)
-#       or another `$$`-aware variant, or
-#   (b) render with an explicit allow-list:
-#         envsubst '$IMAGE_URI $DATA_PVC_NAME $TASK_SUITE $TASK_SUITE_DNS' \
+#       or another `$$`-aware variant (recommended), or
+#   (b) edit the manifest to drop the a8m-only features before rendering:
+#       collapse every `$$NAME` in the `args` body to single-dollar `$NAME`,
+#       then render with an explicit allow-list that names the manifest-level
+#       placeholders ONLY (so GNU leaves the now single-dollar runtime bash
+#       variables literal):
+#         envsubst '$IMAGE_URI $DATA_PVC_NAME $NAMESPACE $TASK_SUITE $TASK_SUITE_DNS' \
 #             < libero-download.yaml | kubectl apply -f -
-#       which tells GNU envsubst to substitute ONLY those four names and
-#       leave every other `$NAME` / `${NAME}` token literal.
+#       See ./README.md section 0.4 for the full GNU-fallback procedure.
 #
 # Convention in this file's container `args` body:
 #   * EVERY bash-intended variable reference is written as `$$NAME` or

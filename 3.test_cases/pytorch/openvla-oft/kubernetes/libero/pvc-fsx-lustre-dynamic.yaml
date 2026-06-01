@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 # pvc-fsx-lustre-dynamic.yaml — Dataset_PVC via FSx for Lustre CSI (dynamic)
 #
 # EKS path for the LIBERO recipe: the FSx for Lustre CSI driver provisions a

@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 # OpenVLA-OFT fine-tuning image
 #
 # Base: AWS Deep Learning Container (DLC) PyTorch training image. The DLC
@@ -69,7 +72,7 @@ RUN apt-get update \
 #      cmu_playing_with_food) and the DROID dataset utility module —
 #      none of which the LIBERO recipe touches.
 #   4. torch / torchvision / torchaudio pins dropped. The DLC base ships
-#      PyTorch 2.9 already version-pinned with NCCL 2.22+, EFA, libfabric,
+#      PyTorch 2.8 already version-pinned with NCCL 2.22+, EFA, libfabric,
 #      and aws-ofi-nccl. Letting upstream's torch==2.2.0 pin install would
 #      shadow the DLC's binaries and resurrect the ncclDevCommDestroy ABI
 #      mismatch we built this image to avoid.
@@ -153,11 +156,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
  && grep -n 'os.walk' experiments/robot/openvla_utils.py \
  && pip install --no-cache-dir -e /opt/openvla-oft
 
-# Copy our vendored training script + extra deps.
+# Copy our vendored training script.
 RUN mkdir -p /openvla-oft /checkpoints
 COPY src/ /openvla-oft/
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-cache-dir -r /openvla-oft/requirements.txt
 
 # Sanity check — fail the build if torch can't import, NCCL is missing,
 # the flash-attn CUDA runtime is mismatched (libcudart.so.X), or the

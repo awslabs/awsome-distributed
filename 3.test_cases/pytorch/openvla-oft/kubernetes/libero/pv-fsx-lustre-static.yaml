@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 # pv-fsx-lustre-static.yaml — Dataset_PVC via pre-provisioned FSx for Lustre
 #
 # SageMaker HyperPod-on-EKS path for the LIBERO recipe: bind an existing

@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 # env_vars — LIBERO recipe (kubernetes/libero/)
 #
 # Single source of truth for `envsubst` variables used by every manifest in
@@ -24,7 +27,13 @@
 # See ./README.md for the full walkthrough.
 
 # Image + namespace.
-export IMAGE_URI=${IMAGE_URI:-<account>.dkr.ecr.<region>.amazonaws.com/openvla-oft:latest}
+# Tag is pinned to the OPENVLA_OFT_COMMIT baked into ../../Dockerfile rather
+# than `latest`, following the repo convention of fixed tags. A pinned tag
+# means a rebuild can't silently serve a stale image — the exact stale-`:latest`
+# failure mode called out in the ncclDevCommDestroy troubleshooting entry in
+# README.md. Replace <account>/<region> with your ECR target, and bump the tag
+# whenever you bump OPENVLA_OFT_COMMIT and rebuild.
+export IMAGE_URI=${IMAGE_URI:-<account>.dkr.ecr.<region>.amazonaws.com/openvla-oft:e4287e9}
 # Kubernetes namespace the Download_Job and Training_Job get applied to.
 # Optional per design open question #3 — leave as "default" for the MVP.
 # Override via `export NAMESPACE=<ns>` before sourcing this file.

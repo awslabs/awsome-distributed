@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 set -euo pipefail
 
 SUITE="${1:-${TASK_SUITE:?usage: verify-tfds-layout.sh <task_suite>|all}}"

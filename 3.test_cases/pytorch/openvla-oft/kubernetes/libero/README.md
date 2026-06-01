@@ -1,3 +1,6 @@
+<!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
+<!-- SPDX-License-Identifier: MIT-0 -->
+
 # Fine-tune OpenVLA-OFT on LIBERO on Amazon EKS
 
 This walkthrough packages the opinionated LIBERO fine-tuning recipe from upstream
@@ -33,7 +36,7 @@ never land in rendered YAML.
 
 You need an EKS cluster (or a SageMaker HyperPod-on-EKS cluster) with a GPU
 node pool. Cluster creation instructions live in
-[`1.architectures`](../../../../../../1.architectures), the
+[`1.architectures`](../../../../../1.architectures), the
 [aws-do-eks](https://bit.ly/do-eks) project, or the
 [eks-blueprints](https://github.com/aws-ia/terraform-aws-eks-blueprints)
 project.
@@ -65,11 +68,15 @@ current `aws-fsx-csi-driver` EKS add-on).
 ### 0.4. Local tooling: `envsubst` (`$$`-aware) and `kubectl`
 
 The manifests in this directory embed bash scripts inside YAML and rely on
-`$$` as an escape so envsubst leaves bash-intended variables literal. GNU
-gettext's `envsubst` (the one shipped on macOS via `gettext` and on Linux
-via `gettext` / `gettext-base`) does **not** honour that escape and will
-strip your bash variables at render time. Install
-[a8m/envsubst](https://github.com/a8m/envsubst), which does honour `$$`.
+`$$` as an escape so envsubst leaves bash-intended variables literal, and
+`libero-finetune.yaml` additionally uses `${VAR:-default}` default-value
+expansion (for `${RUN_ID_NOTE:-…}`). GNU gettext's `envsubst` (the one shipped
+on macOS via `gettext` and on Linux via `gettext` / `gettext-base`) supports
+**neither**: it has no `$$` escape, so it mangles the inline bash, and it does
+not understand `${VAR:-default}`, so it leaves that token literal in the
+rendered YAML. Install [a8m/envsubst](https://github.com/a8m/envsubst), which
+honours both. It is the recommended tool, and the one these manifests render
+cleanly with out of the box.
 
 There is no Homebrew formula. Install from the upstream prebuilt release
 binary (recommended) or `go install`:
@@ -102,23 +109,61 @@ envsubst --version
 # still winning the PATH race. Re-check `which envsubst` and `echo $PATH`.
 ```
 
-If you cannot install a8m/envsubst, render with GNU envsubst's allow-list
-form so it only substitutes the four manifest-level placeholders and
-leaves every bash `$NAME` literal:
+If you cannot install a8m/envsubst and must fall back to GNU gettext's
+`envsubst`, the allow-list form alone is **not** enough. An allow-list only
+restricts *which* names GNU substitutes — it does not teach GNU the `$$`
+escape or `${VAR:-default}` expansion that these manifests rely on. To render
+with GNU envsubst you must also edit the manifests so they no longer depend on
+those two a8m features:
+
+1. **Collapse every `$$NAME` to `$NAME`.** GNU has no `$$` escape, so the
+   doubled form would render as a literal `$` followed by the substituted (or
+   stripped) value, corrupting the inline bash in `libero-download.yaml`.
+   Rewrite each `$$NAME` / `$${NAME[@]}` in the container `args` body to the
+   single-dollar `$NAME` / `${NAME[@]}` form, then rely on the allow-list to
+   keep GNU from touching those runtime variables.
+2. **Expand `${VAR:-default}` by hand.** GNU leaves `${RUN_ID_NOTE:-…}` in
+   `libero-finetune.yaml` literal. Replace it with the resolved value (the
+   upstream `run_id_note` string, or your override) before rendering.
+
+Then render with an explicit allow-list naming **only** the manifest-level
+placeholders for that file, so every remaining `$NAME` (now your runtime bash
+variables) is left literal. The allow-list differs per manifest:
 
 ```bash
-envsubst '$IMAGE_URI $DATA_PVC_NAME $NAMESPACE $TASK_SUITE_DNS' \
+# libero-download.yaml — TASK_SUITE is consumed at render time (env: block)
+# AND at runtime (inline bash); after step 1 both are single-dollar, so it
+# must be in the allow-list.
+envsubst '$IMAGE_URI $DATA_PVC_NAME $NAMESPACE $TASK_SUITE $TASK_SUITE_DNS' \
   < libero-download.yaml | kubectl apply -f -
+
+# libero-finetune.yaml — after expanding ${RUN_ID_NOTE:-…} by hand (step 2).
+envsubst '$IMAGE_URI $DATA_PVC_NAME $NAMESPACE $INSTANCE_TYPE $NUM_NODES $GPU_PER_NODE $EFA_PER_NODE $FI_PROVIDER $TASK_SUITE $TASK_SUITE_DNS $WANDB_MODE $WANDB_ENTITY $WANDB_PROJECT' \
+  < libero-finetune.yaml | kubectl apply -f -
+
+# pvc-fsx-lustre-dynamic.yaml — no $$ or ${VAR:-default}, so no edits needed.
+envsubst '$DATA_PVC_NAME $DATA_PVC_SIZE $FSX_SUBNET_ID $FSX_SECURITY_GROUP_ID' \
+  < pvc-fsx-lustre-dynamic.yaml | kubectl apply -f -
+
+# pv-fsx-lustre-static.yaml — no $$ or ${VAR:-default}, so no edits needed.
+envsubst '$DATA_PVC_NAME $DATA_PVC_SIZE $FSX_FILESYSTEM_ID $FSX_DNS_NAME $FSX_MOUNT_NAME' \
+  < pv-fsx-lustre-static.yaml | kubectl apply -f -
 ```
+
+Because the GNU path requires hand-editing two of the manifests on every
+render, installing a8m/envsubst is strongly preferred.
 
 `kubectl` must also be installed and configured for the target cluster.
 
 ### 0.5. Container image
 
-The recipe builds the `openvla-oft:latest` image from the test case's
-`Dockerfile` (one directory up). The build instructions below are
-self-contained and can be run from this directory without changing
-into the parent path.
+The recipe builds the `openvla-oft` image from the test case's
+`Dockerfile` (one directory up) and tags it with the upstream commit the
+Dockerfile pins (`OPENVLA_OFT_COMMIT`), not `latest`. Fixed tags are the
+repo convention and they keep a rebuild from silently serving a stale image
+— the exact `:latest` trap the `ncclDevCommDestroy` troubleshooting entry
+below calls out. The build instructions are self-contained and can be run
+from this directory without changing into the parent path.
 
 The Dockerfile builds against the AWS Deep Learning Container (DLC)
 PyTorch training image so that PyTorch, NCCL, EFA, libfabric, and the
@@ -138,11 +183,16 @@ account `763104351884`, which is separate from your own ECR account. The
 quick reference below logs in to both registries — the DLC one for the
 pull during build, and yours for the push after.
 
-Quick reference (run from `kubernetes/libero/`, no `pushd`/`popd`
-required — `-f ../../Dockerfile` and a `../..` build context point buildx
-at the test-case root):
+Quick reference (run from the test-case root
+`3.test_cases/pytorch/openvla-oft`, the directory that holds the
+`Dockerfile`, so `-f Dockerfile` and a `.` build context are the current
+path):
 
 ```bash
+# From the repo root, cd into the test case directory so the Dockerfile
+# and build context are the current path.
+cd 3.test_cases/pytorch/openvla-oft
+
 # One-time setup on a fresh host: create a buildx builder that supports
 # cross-platform builds and register QEMU emulation. Skip if you already
 # have a buildx builder (`docker buildx ls`).
@@ -154,6 +204,11 @@ docker run --privileged --rm tonistiigi/binfmt --install all
 export AWS_REGION=${AWS_REGION:-$(aws configure get region)}
 export REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com/
 
+# Tag the image with the upstream commit the Dockerfile pins
+# (OPENVLA_OFT_COMMIT). Bump this in lockstep when you bump the Dockerfile.
+# It must match the tag in IMAGE_URI in env_vars.
+export IMAGE_TAG=e4287e9
+
 # Log in to the DLC registry (account 763104351884) so buildx can pull
 # the base image during the build.
 aws ecr get-login-password --region ${AWS_REGION} \
@@ -164,21 +219,21 @@ aws ecr get-login-password --region ${AWS_REGION} \
 docker buildx build --platform linux/amd64 \
   --build-arg AWS_REGION=${AWS_REGION} \
   --load \
-  -f ../../Dockerfile \
-  -t ${REGISTRY}openvla-oft:latest \
-  ../..
+  -f Dockerfile \
+  -t ${REGISTRY}openvla-oft:${IMAGE_TAG} \
+  .
 
 # Push to your own ECR.
 aws ecr get-login-password --region ${AWS_REGION} \
   | docker login --username AWS --password-stdin ${REGISTRY}
-docker image push ${REGISTRY}openvla-oft:latest
+docker image push ${REGISTRY}openvla-oft:${IMAGE_TAG}
 ```
 
 ### 0.6. Clone this repository
 
 ```bash
-git clone https://github.com/awslabs/awsome-distributed-training/
-cd awsome-distributed-training/3.test_cases/pytorch/vla/openvla/openvla-oft/kubernetes/libero
+git clone https://github.com/awslabs/awsome-distributed-ai/
+cd awsome-distributed-ai/3.test_cases/pytorch/openvla-oft/kubernetes/libero
 ```
 
 ### 0.7. Configure environment variables
@@ -222,11 +277,30 @@ close.
 The Dataset PVC is the only integration point between the Download Job and
 the Training Job. Pick one of the three paths below based on your cluster.
 
-Recommended capacity: **at least 100 GiB**. The four LIBERO suites together
-occupy roughly 10.2 GiB on disk; the rest is headroom for checkpoints, which
-colocate with the dataset by default (see "Checkpoint location" below). The
-`env_vars.example` template provisions `1200Gi` to give a realistic margin
-on a fresh FSx filesystem.
+Recommended capacity: **at least 100 GiB**. The Dataset PVC holds three
+things that share the volume:
+
+- **RLDS dataset** — roughly 2.5 GiB per LIBERO suite (≈10.2 GiB for all
+  four suites).
+- **Hugging Face cache** (`/data/hf-cache`) — the base `openvla/openvla-7b`
+  snapshot the run downloads, ~15 GiB in bf16.
+- **Checkpoints** (`/data/runs/<run_id>`) — see "Checkpoint location" below.
+
+The smoke test ships `--save_latest_checkpoint_only=True`, so it keeps a
+single, repeatedly overwritten checkpoint dir. Because
+`--merge_lora_during_training=True` writes the full merged OpenVLA-7B
+(~15 GiB) and not just the small rank-32 LoRA adapter, that one dir is
+~15 GiB. Total steady-state footprint is therefore ~30–40 GiB, comfortably
+inside the 100 GiB minimum.
+
+> **Heads-up if you change the save flags.** Setting
+> `--save_latest_checkpoint_only=False` keeps *every* checkpoint, and with
+> the merge enabled each one is a full ~15 GiB merged 7B model. At
+> `--save_freq=10` over `--max_steps=100` that is ten dirs (~150 GiB) and
+> blows past the 100 GiB minimum. If you need all checkpoints, either drop
+> `--merge_lora_during_training` (keep only the small adapters) or provision
+> a much larger PVC. The `env_vars.example` template provisions `1200Gi` to
+> give a realistic margin on a fresh FSx filesystem.
 
 ### Checkpoint location
 
@@ -689,12 +763,19 @@ PyTorch base, which version-pins PyTorch + NCCL + EFA + libfabric +
 `aws-ofi-nccl` together. The current `Dockerfile` already does this and
 includes a `python -c "import torch"` sanity check at build time so the
 mismatch fails the build instead of pod startup. If you have a stale
-image tagged `:latest` from before the DLC switch, rebuild and push from
-this directory (`kubernetes/libero/`):
+image from before the DLC switch, rebuild and push from the test case
+root (`3.test_cases/pytorch/openvla-oft`, the directory that holds the
+`Dockerfile`). Bump `IMAGE_TAG` if you also moved the Dockerfile's pinned
+commit, and keep it in sync with the tag in `env_vars`:
 
 ```bash
+# From the repo root, cd into the test case directory so the Dockerfile
+# and build context are the current path.
+cd 3.test_cases/pytorch/openvla-oft
+
 export AWS_REGION=${AWS_REGION:-$(aws configure get region)}
 export REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com/
+export IMAGE_TAG=e4287e9
 
 aws ecr get-login-password --region ${AWS_REGION} \
   | docker login --username AWS --password-stdin \
@@ -703,17 +784,17 @@ aws ecr get-login-password --region ${AWS_REGION} \
 docker buildx build --platform linux/amd64 \
   --build-arg AWS_REGION=${AWS_REGION} \
   --load \
-  -f ../../Dockerfile \
-  -t ${REGISTRY}openvla-oft:latest \
-  ../..
+  -f Dockerfile \
+  -t ${REGISTRY}openvla-oft:${IMAGE_TAG} \
+  .
 
 aws ecr get-login-password --region ${AWS_REGION} \
   | docker login --username AWS --password-stdin ${REGISTRY}
-docker image push ${REGISTRY}openvla-oft:latest
+docker image push ${REGISTRY}openvla-oft:${IMAGE_TAG}
 
 # Re-pull on the cluster.
-envsubst < libero-finetune.yaml | kubectl delete -f - --ignore-not-found
-envsubst < libero-finetune.yaml | kubectl apply -f -
+envsubst < kubernetes/libero/libero-finetune.yaml | kubectl delete -f - --ignore-not-found
+envsubst < kubernetes/libero/libero-finetune.yaml | kubectl apply -f -
 ```
 
 ### Worker fails with `'PrismaticVisionBackbone' object has no attribute 'set_num_images_in_input'`
@@ -748,13 +829,17 @@ locates the current files regardless of cwd. If you see this error,
 you are on a pre-patch image. Rebuild and push:
 
 ```bash
+# From the repo root, cd into the test case directory so the Dockerfile
+# and build context are the current path.
+cd 3.test_cases/pytorch/openvla-oft
+
 docker buildx build --platform linux/amd64 \
   --build-arg AWS_REGION=${AWS_REGION} \
-  --load -f ../../Dockerfile -t ${REGISTRY}openvla-oft:latest ../..
-docker image push ${REGISTRY}openvla-oft:latest
+  --load -f Dockerfile -t ${REGISTRY}openvla-oft:${IMAGE_TAG} .
+docker image push ${REGISTRY}openvla-oft:${IMAGE_TAG}
 
-envsubst < libero-finetune.yaml | kubectl delete -f - --ignore-not-found
-envsubst < libero-finetune.yaml | kubectl apply -f -
+envsubst < kubernetes/libero/libero-finetune.yaml | kubectl delete -f - --ignore-not-found
+envsubst < kubernetes/libero/libero-finetune.yaml | kubectl apply -f -
 ```
 
 ### Worker fails with `module 'transformers_modules.<commit>.processing_prismatic' has no attribute 'PrismaticProcessor'`
@@ -788,13 +873,17 @@ copy before the other ranks attempt the import. If you see this error,
 you are on a pre-fix build of the image. Rebuild and push:
 
 ```bash
+# From the repo root, cd into the test case directory so the Dockerfile
+# and build context are the current path.
+cd 3.test_cases/pytorch/openvla-oft
+
 docker buildx build --platform linux/amd64 \
   --build-arg AWS_REGION=${AWS_REGION} \
-  --load -f ../../Dockerfile -t ${REGISTRY}openvla-oft:latest ../..
-docker image push ${REGISTRY}openvla-oft:latest
+  --load -f Dockerfile -t ${REGISTRY}openvla-oft:${IMAGE_TAG} .
+docker image push ${REGISTRY}openvla-oft:${IMAGE_TAG}
 
-envsubst < libero-finetune.yaml | kubectl delete -f - --ignore-not-found
-envsubst < libero-finetune.yaml | kubectl apply -f -
+envsubst < kubernetes/libero/libero-finetune.yaml | kubectl delete -f - --ignore-not-found
+envsubst < kubernetes/libero/libero-finetune.yaml | kubectl apply -f -
 ```
 
 If the same race re-appears in a future upstream `from_pretrained`

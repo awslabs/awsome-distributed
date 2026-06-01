@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 # libero-finetune.yaml — OpenVLA-OFT LIBERO fine-tuning PyTorchJob
 #
 # Structural scaffolding for the LIBERO Training_Job. The surrounding
@@ -38,7 +41,7 @@ spec:
     rdzvBackend: c10d
     minReplicas: 1
     maxReplicas: 64
-    maxRestarts: 100
+    maxRestarts: 3
     metrics:
       - type: Resource
         resource:
@@ -193,7 +196,14 @@ spec:
                 - --num_steps_before_decay=100000
                 - --max_steps=100
                 - --save_freq=10
-                - --save_latest_checkpoint_only=False
+                # Smoke test only needs to prove the save/merge path works once.
+                # With --merge_lora_during_training=True, every save writes the
+                # full merged OpenVLA-7B (~15 GB in bf16), not just the small
+                # rank-32 LoRA adapter. At save_freq=10 over max_steps=100 that
+                # is 10 merged checkpoints (~150 GB) of an unconverged model.
+                # save_latest_checkpoint_only=True keeps a single overwritten
+                # dir (~15 GB), which fits the README's 100 GiB PVC minimum.
+                - --save_latest_checkpoint_only=True
                 - --image_aug=True
                 - --use_lora=True
                 - --lora_rank=32

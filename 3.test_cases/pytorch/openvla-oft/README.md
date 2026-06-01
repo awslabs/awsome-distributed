@@ -1,3 +1,6 @@
+<!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
+<!-- SPDX-License-Identifier: MIT-0 -->
+
 # OpenVLA-OFT Fine-tuning
 
 Fine-tune the [OpenVLA](https://huggingface.co/openvla/openvla-7b) vision-language-action (VLA) model using the [OFT (Optimized Fine-Tuning)](https://github.com/moojink/openvla-oft) recipe from Moo Jin Kim et al.
@@ -11,8 +14,7 @@ openvla-oft/
 ├── Dockerfile                   # Container image with openvla-oft + training script
 ├── README.md                    # This file
 ├── src/
-│   ├── finetune.py              # Fine-tuning script (vendored from openvla-oft)
-│   └── requirements.txt         # Extra Python deps layered on top of openvla-oft
+│   └── finetune.py              # Fine-tuning script (adapted from openvla-oft: +3 distributed fixes)
 └── kubernetes/
     └── libero/                  # LIBERO recipe (PyTorchJob + Download Job + helpers)
         ├── README.md            # End-to-end LIBERO walkthrough
@@ -28,7 +30,7 @@ A `slurm/` sibling folder is intentionally left out for now and will be added in
 
 ## Prerequisites
 
-- A Kubernetes cluster with GPU nodes (EKS, or SageMaker HyperPod-on-EKS). See [1.architectures/4.amazon-eks](../../../../1.architectures/4.amazon-eks) for cluster setup.
+- A Kubernetes cluster with GPU nodes (EKS, or SageMaker HyperPod-on-EKS). See [1.architectures/4.amazon-eks](../../../1.architectures/4.amazon-eks) for cluster setup.
 - The [Kubeflow training operator](https://github.com/kubeflow/training-operator) installed for the `PyTorchJob` CRD.
 - Shared storage (FSx for Lustre, EFS, or similar) mounted into the pods via a `PersistentVolumeClaim`. The manifest expects it at `/data` and uses it for:
   - `/data/datasets/rlds` — your RLDS-format demonstration data
